@@ -91,3 +91,48 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             with self.assertRaises(ClinikoAPIError):
                 await client.list_practitioners()
+
+    async def test_list_appointment_types_returns_only_requested_fields(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/appointment_types")
+            self.assertEqual(request.url.params["per_page"], "100")
+            return httpx.Response(
+                200,
+                json={
+                    "appointment_types": [
+                        {
+                            "id": "20",
+                            "name": "Initial Consultation",
+                            "duration_in_minutes": 45,
+                            "description": "Not included in the API response",
+                            "show_in_online_bookings": True,
+                        }
+                    ]
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointment_types = await client.list_appointment_types()
+
+        self.assertEqual(
+            appointment_types,
+            [
+                {
+                    "id": "20",
+                    "name": "Initial Consultation",
+                    "duration_in_minutes": 45,
+                }
+            ],
+        )
+
+    async def test_list_appointment_types_rejects_upstream_error(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"error": "Service unavailable"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAPIError):
+                await client.list_appointment_types()
