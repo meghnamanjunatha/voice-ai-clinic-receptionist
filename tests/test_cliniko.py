@@ -1,10 +1,16 @@
 import base64
 import unittest
+from datetime import date
 
 import httpx
 from pydantic import SecretStr
 
-from backend.cliniko import ClinikoAPIError, ClinikoClient
+from backend.cliniko import (
+    ClinikoAPIError,
+    ClinikoAuthenticationError,
+    ClinikoClient,
+    ClinikoRateLimitError,
+)
 from backend.config import Settings
 
 
@@ -136,3 +142,137 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             with self.assertRaises(ClinikoAPIError):
                 await client.list_appointment_types()
+
+    async def test_list_available_times_returns_simplified_slots(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(
+                request.url.path,
+                "/v1/businesses/1/practitioners/2/appointment_types/3/available_times",
+            )
+            self.assertEqual(request.url.params["from"], "2026-07-20")
+            self.assertEqual(request.url.params["to"], "2026-07-21")
+            self.assertEqual(request.url.params["per_page"], "100")
+            return httpx.Response(
+                200,
+                json={
+                    "available_times": [
+                        {"appointment_start": "2026-07-20T10:00:00+05:30"},
+                        {"appointment_start": "2026-07-20T11:00:00Z"},
+                    ],
+                    "total_entries": 2,
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            slots = await client.list_available_times(
+                business_id="1",
+                practitioner_id="2",
+                appointment_type_id="3",
+                from_date=date(2026, 7, 20),
+                to_date=date(2026, 7, 21),
+            )
+
+        self.assertEqual(
+            slots,
+            [
+                {
+                    "start_time": "2026-07-20T10:00:00+05:30",
+                    "business_id": "1",
+                    "practitioner_id": "2",
+                    "appointment_type_id": "3",
+                },
+                {
+                    "start_time": "2026-07-20T11:00:00+00:00",
+                    "business_id": "1",
+                    "practitioner_id": "2",
+                    "appointment_type_id": "3",
+                },
+            ],
+        )
+
+    async def test_list_available_times_returns_empty_list(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"available_times": [], "total_entries": 0},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            slots = await client.list_available_times(
+                business_id="1",
+                practitioner_id="2",
+                appointment_type_id="3",
+                from_date=date(2026, 7, 20),
+                to_date=date(2026, 7, 20),
+            )
+
+        self.assertEqual(slots, [])
+
+    async def test_list_available_times_rejects_upstream_failure(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                500,
+                text="Server error containing test-key-au1",
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertLogs("backend.cliniko", level="ERROR") as logs:
+                with self.assertRaises(ClinikoAPIError):
+                    await client.list_available_times(
+                        business_id="1",
+                        practitioner_id="2",
+                        appointment_type_id="3",
+                        from_date=date(2026, 7, 20),
+                        to_date=date(2026, 7, 20),
+                    )
+
+        log_output = "\n".join(logs.output)
+        self.assertIn("status_code=500", log_output)
+        self.assertIn(
+            "requested_url=https://api.au1.cliniko.com/v1/businesses/1/"
+            "practitioners/2/appointment_types/3/available_times",
+            log_output,
+        )
+        self.assertIn("'from': '2026-07-20'", log_output)
+        self.assertIn("'to': '2026-07-20'", log_output)
+        self.assertIn("response_body=Server error containing [REDACTED]", log_output)
+        self.assertNotIn("test-key-au1", log_output)
+        self.assertNotIn("Authorization", log_output)
+
+    async def test_list_available_times_classifies_credentials_and_rate_limit(
+        self,
+    ) -> None:
+        responses = iter(
+            [
+                httpx.Response(401, json={"error": "Unauthorized"}),
+                httpx.Response(
+                    429,
+                    headers={"X-RateLimit-Reset": "1784534400"},
+                    json={"error": "Rate limited"},
+                ),
+            ]
+        )
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return next(responses)
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAuthenticationError):
+                await client.list_available_times(
+                    "1", "2", "3", date(2026, 7, 20), date(2026, 7, 20)
+                )
+
+            with self.assertRaises(ClinikoRateLimitError) as context:
+                await client.list_available_times(
+                    "1", "2", "3", date(2026, 7, 20), date(2026, 7, 20)
+                )
+
+        self.assertEqual(context.exception.reset_at, "1784534400")
