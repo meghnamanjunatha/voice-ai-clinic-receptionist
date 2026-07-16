@@ -1,11 +1,26 @@
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class PatientCreate(BaseModel):
-    name: str
+    full_name: str = Field(min_length=1, max_length=511)
+    phone: str = Field(min_length=1, max_length=50)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("full_name must not be blank")
+        return normalized
+
+
+class PatientResponse(BaseModel):
+    id: str
+    full_name: str
     phone: str
+    is_new_patient: bool
 
 class AvailabilityRequest(BaseModel):
     specialty: str

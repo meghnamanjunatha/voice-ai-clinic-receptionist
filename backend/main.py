@@ -1,23 +1,19 @@
 from datetime import date
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import FastAPI, HTTPException, Query
 
-from . import models
 from .cliniko import (
     ClinikoAPIError,
     ClinikoAuthenticationError,
     ClinikoClient,
+    ClinikoPatientConflictError,
     ClinikoRateLimitError,
+    InvalidPhoneNumberError,
 )
 from .config import get_settings
-from .database import engine, get_db
-from .models import Patient
-from .schemas import AvailabilitySlot, PatientCreate
+from .schemas import AvailabilitySlot, PatientCreate, PatientResponse
 
 app = FastAPI()
-
-models.Base.metadata.create_all(bind=engine)
 
 @app.get("/")
 def root():
@@ -98,22 +94,32 @@ async def list_availability(
         ) from exc
 
 
-@app.post("/patients")
-def create_or_get_patient(patient: PatientCreate, db: Session = Depends(get_db)):
-    existing_patient = db.query(Patient).filter(
-        Patient.phone == patient.phone
-    ).first()
-
-    if existing_patient:
-        return existing_patient
-
-    new_patient = Patient(
-        name=patient.name,
-        phone=patient.phone
-    )
-
-    db.add(new_patient)
-    db.commit()
-    db.refresh(new_patient)
-
-    return new_patient
+@app.post("/patients", response_model=PatientResponse)
+async def create_or_get_patient(patient: PatientCreate):
+    try:
+        async with ClinikoClient(get_settings()) as client:
+            return await client.find_or_create_patient(
+                full_name=patient.full_name,
+                phone=patient.phone,
+            )
+    except InvalidPhoneNumberError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ClinikoPatientConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ClinikoAuthenticationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Cliniko authentication failed",
+        ) from exc
+    except ClinikoRateLimitError as exc:
+        headers = {"X-RateLimit-Reset": exc.reset_at} if exc.reset_at else None
+        raise HTTPException(
+            status_code=429,
+            detail="Cliniko rate limit exceeded",
+            headers=headers,
+        ) from exc
+    except ClinikoAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to find or create patient in Cliniko",
+        ) from exc

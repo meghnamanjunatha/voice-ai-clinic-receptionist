@@ -1,4 +1,5 @@
 import base64
+import json
 import unittest
 from datetime import date
 
@@ -9,6 +10,7 @@ from backend.cliniko import (
     ClinikoAPIError,
     ClinikoAuthenticationError,
     ClinikoClient,
+    ClinikoPatientConflictError,
     ClinikoRateLimitError,
 )
 from backend.config import Settings
@@ -276,3 +278,148 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(context.exception.reset_at, "1784534400")
+
+    async def test_find_or_create_patient_returns_existing_patient(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.path, "/v1/patients")
+            self.assertEqual(request.url.params["page"], "1")
+            self.assertEqual(request.url.params["per_page"], "100")
+            return httpx.Response(
+                200,
+                json={
+                    "patients": [
+                        {
+                            "id": "30",
+                            "label": "Jane Doe",
+                            "patient_phone_numbers": [
+                                {
+                                    "number": "+91 98765 43210",
+                                    "normalized_number": "919876543210",
+                                    "phone_type": "Mobile",
+                                }
+                            ],
+                        }
+                    ],
+                    "total_entries": 1,
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            patient = await client.find_or_create_patient(
+                full_name="Jane Doe",
+                phone="+91 (98765) 43210",
+            )
+
+        self.assertEqual(
+            patient,
+            {
+                "id": "30",
+                "full_name": "Jane Doe",
+                "phone": "919876543210",
+                "is_new_patient": False,
+            },
+        )
+
+    async def test_find_or_create_patient_creates_new_patient(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"patients": [], "total_entries": 0},
+                )
+
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(request.url.path, "/v1/patients")
+            self.assertEqual(
+                json.loads(request.content),
+                {
+                    "first_name": "John",
+                    "last_name": "Michael Smith",
+                    "patient_phone_numbers": [
+                        {"number": "919999999999", "phone_type": "Mobile"}
+                    ],
+                },
+            )
+            return httpx.Response(
+                201,
+                json={
+                    "id": "31",
+                    "label": "John Michael Smith",
+                    "patient_phone_numbers": [
+                        {
+                            "number": "919999999999",
+                            "normalized_number": "919999999999",
+                            "phone_type": "Mobile",
+                        }
+                    ],
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            patient = await client.find_or_create_patient(
+                full_name="John Michael Smith",
+                phone="+91 99999-99999",
+            )
+
+        self.assertEqual(
+            patient,
+            {
+                "id": "31",
+                "full_name": "John Michael Smith",
+                "phone": "919999999999",
+                "is_new_patient": True,
+            },
+        )
+
+    async def test_find_or_create_patient_rejects_multiple_matches(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            phone_number = {
+                "number": "919876543210",
+                "normalized_number": "919876543210",
+                "phone_type": "Mobile",
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "patients": [
+                        {
+                            "id": "30",
+                            "label": "Jane Doe",
+                            "patient_phone_numbers": [phone_number],
+                        },
+                        {
+                            "id": "32",
+                            "label": "Janet Doe",
+                            "patient_phone_numbers": [phone_number],
+                        },
+                    ],
+                    "total_entries": 2,
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoPatientConflictError):
+                await client.find_or_create_patient(
+                    full_name="Jane Doe",
+                    phone="+91 98765 43210",
+                )
+
+    async def test_find_or_create_patient_rejects_upstream_failure(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "Server error"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAPIError):
+                await client.find_or_create_patient(
+                    full_name="Jane Doe",
+                    phone="+91 98765 43210",
+                )
