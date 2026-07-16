@@ -8,8 +8,10 @@ from pydantic import SecretStr
 
 from backend.cliniko import (
     ClinikoAPIError,
+    ClinikoAppointmentNotFoundError,
     ClinikoAuthenticationError,
     ClinikoClient,
+    ClinikoInvalidAppointmentDateTimeError,
     ClinikoInvalidAppointmentIDsError,
     ClinikoPatientConflictError,
     ClinikoRateLimitError,
@@ -569,3 +571,161 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(request_count, 1)
+
+    async def test_reschedule_individual_appointment_succeeds_once(self) -> None:
+        patch_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal patch_count
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "40",
+                        "starts_at": "2026-07-20T10:00:00+05:30",
+                    },
+                )
+
+            patch_count += 1
+            self.assertEqual(request.method, "PATCH")
+            self.assertEqual(request.url.path, "/v1/individual_appointments/40")
+            self.assertEqual(
+                json.loads(request.content),
+                {
+                    "starts_at": "2026-07-21T11:00:00+05:30",
+                    "ends_at": None,
+                },
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "40",
+                    "starts_at": "2026-07-21T11:00:00+05:30",
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointment = await client.reschedule_individual_appointment(
+                appointment_id="40",
+                starts_at=datetime.fromisoformat("2026-07-21T11:00:00+05:30"),
+            )
+
+        self.assertEqual(patch_count, 1)
+        self.assertEqual(
+            appointment,
+            {
+                "appointment_id": "40",
+                "starts_at": "2026-07-21T11:00:00+05:30",
+                "status": "rescheduled",
+            },
+        )
+
+    async def test_reschedule_individual_appointment_handles_not_found(self) -> None:
+        patch_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal patch_count
+            if request.method == "PATCH":
+                patch_count += 1
+            return httpx.Response(404, json={"error": "Not found"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAppointmentNotFoundError):
+                await client.reschedule_individual_appointment(
+                    "999",
+                    datetime.fromisoformat("2026-07-21T11:00:00+05:30"),
+                )
+
+        self.assertEqual(patch_count, 0)
+
+    async def test_reschedule_individual_appointment_handles_unavailable_slot(
+        self,
+    ) -> None:
+        patch_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal patch_count
+            if request.method == "GET":
+                return httpx.Response(200, json={"id": "40"})
+            patch_count += 1
+            return httpx.Response(
+                422,
+                json={"errors": {"starts_at": ["is no longer available"]}},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoSlotUnavailableError):
+                await client.reschedule_individual_appointment(
+                    "40",
+                    datetime.fromisoformat("2026-07-21T11:00:00+05:30"),
+                )
+
+        self.assertEqual(patch_count, 1)
+
+    async def test_reschedule_individual_appointment_handles_invalid_datetime(
+        self,
+    ) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json={"id": "40"})
+            return httpx.Response(
+                422,
+                json={"errors": {"starts_at": ["is invalid"]}},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoInvalidAppointmentDateTimeError):
+                await client.reschedule_individual_appointment(
+                    "40",
+                    datetime.fromisoformat("2026-07-21T11:00:00+05:30"),
+                )
+
+    async def test_reschedule_individual_appointment_handles_rate_limit(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                headers={"X-RateLimit-Reset": "1784534400"},
+                json={"error": "Rate limited"},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoRateLimitError) as context:
+                await client.reschedule_individual_appointment(
+                    "40",
+                    datetime.fromisoformat("2026-07-21T11:00:00+05:30"),
+                )
+
+        self.assertEqual(context.exception.reset_at, "1784534400")
+
+    async def test_reschedule_individual_appointment_handles_upstream_failure(
+        self,
+    ) -> None:
+        patch_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal patch_count
+            if request.method == "GET":
+                return httpx.Response(200, json={"id": "40"})
+            patch_count += 1
+            return httpx.Response(500, json={"error": "Server error"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAPIError):
+                await client.reschedule_individual_appointment(
+                    "40",
+                    datetime.fromisoformat("2026-07-21T11:00:00+05:30"),
+                )
+
+        self.assertEqual(patch_count, 1)

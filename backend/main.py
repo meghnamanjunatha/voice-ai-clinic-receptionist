@@ -1,11 +1,13 @@
 from datetime import date
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Path, Query
 
 from .cliniko import (
     ClinikoAPIError,
+    ClinikoAppointmentNotFoundError,
     ClinikoAuthenticationError,
     ClinikoClient,
+    ClinikoInvalidAppointmentDateTimeError,
     ClinikoInvalidAppointmentIDsError,
     ClinikoPatientConflictError,
     ClinikoRateLimitError,
@@ -15,6 +17,8 @@ from .cliniko import (
 from .config import get_settings
 from .schemas import (
     AppointmentCreate,
+    AppointmentReschedule,
+    AppointmentRescheduleResponse,
     AppointmentResponse,
     AvailabilitySlot,
     PatientCreate,
@@ -170,4 +174,52 @@ async def create_appointment(appointment: AppointmentCreate):
         raise HTTPException(
             status_code=502,
             detail="Unable to create appointment in Cliniko",
+        ) from exc
+
+
+@app.patch(
+    "/appointments/{appointment_id}",
+    response_model=AppointmentRescheduleResponse,
+)
+async def reschedule_appointment(
+    appointment: AppointmentReschedule,
+    appointment_id: str = Path(pattern=r"^[1-9]\d*$"),
+):
+    try:
+        async with ClinikoClient(get_settings()) as client:
+            return await client.reschedule_individual_appointment(
+                appointment_id=appointment_id,
+                starts_at=appointment.starts_at,
+            )
+    except ClinikoAppointmentNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Cliniko appointment not found",
+        ) from exc
+    except ClinikoSlotUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="The selected appointment time is no longer available",
+        ) from exc
+    except ClinikoInvalidAppointmentDateTimeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Cliniko rejected the appointment date-time",
+        ) from exc
+    except ClinikoAuthenticationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Cliniko authentication failed",
+        ) from exc
+    except ClinikoRateLimitError as exc:
+        headers = {"X-RateLimit-Reset": exc.reset_at} if exc.reset_at else None
+        raise HTTPException(
+            status_code=429,
+            detail="Cliniko rate limit exceeded",
+            headers=headers,
+        ) from exc
+    except ClinikoAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reschedule appointment in Cliniko",
         ) from exc

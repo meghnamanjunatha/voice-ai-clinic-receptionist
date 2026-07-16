@@ -42,6 +42,14 @@ class ClinikoInvalidAppointmentIDsError(ClinikoAPIError):
     """Raised when Cliniko rejects an appointment's referenced resource IDs."""
 
 
+class ClinikoAppointmentNotFoundError(ClinikoAPIError):
+    """Raised when an individual appointment does not exist in Cliniko."""
+
+
+class ClinikoInvalidAppointmentDateTimeError(ClinikoAPIError):
+    """Raised when Cliniko rejects an appointment date-time."""
+
+
 class ClinikoClient:
     def __init__(
         self,
@@ -548,6 +556,13 @@ class ClinikoClient:
             "does not exist",
             "must exist",
         )
+        invalid_datetime_indicators = (
+            "invalid",
+            "not valid",
+            "must be",
+            "can't be",
+            "cannot be",
+        )
         id_fields = (
             "patient id",
             "business id",
@@ -559,6 +574,12 @@ class ClinikoClient:
             raise ClinikoSlotUnavailableError(
                 "The selected appointment time is no longer available"
             )
+        if "starts at" in error_text and any(
+            indicator in error_text for indicator in invalid_datetime_indicators
+        ):
+            raise ClinikoInvalidAppointmentDateTimeError(
+                "Cliniko rejected the appointment date-time"
+            )
         if any(field in error_text for field in id_fields) and any(
             indicator in error_text for indicator in invalid_id_indicators
         ):
@@ -566,3 +587,119 @@ class ClinikoClient:
                 "One or more Cliniko IDs are invalid"
             )
         raise ClinikoAPIError("Cliniko rejected the appointment request")
+
+    async def reschedule_individual_appointment(
+        self,
+        appointment_id: str,
+        starts_at: datetime,
+    ) -> dict[str, str]:
+        path = f"/individual_appointments/{appointment_id}"
+
+        try:
+            existing_response = await self._client.get(path)
+        except httpx.RequestError as exc:
+            raise ClinikoAPIError("Unable to retrieve Cliniko appointment") from exc
+
+        self._raise_for_appointment_response(existing_response)
+        try:
+            existing_appointment = existing_response.json()
+        except ValueError as exc:
+            raise ClinikoAPIError(
+                "Cliniko returned an invalid appointment response"
+            ) from exc
+        if not isinstance(existing_appointment, dict):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+        if str(existing_appointment.get("id")) != appointment_id:
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+
+        try:
+            # The update is intentionally attempted exactly once.
+            response = await self._client.patch(
+                path,
+                json={
+                    "starts_at": starts_at.isoformat(),
+                    "ends_at": None,
+                },
+            )
+        except httpx.RequestError as exc:
+            raise ClinikoAPIError("Unable to reschedule Cliniko appointment") from exc
+
+        if response.status_code in {401, 403}:
+            raise ClinikoAuthenticationError("Cliniko authentication failed")
+        if response.status_code == 429:
+            raise ClinikoRateLimitError(response.headers.get("X-RateLimit-Reset"))
+        if response.status_code == 404:
+            raise ClinikoAppointmentNotFoundError("Cliniko appointment not found")
+        if response.status_code == 409:
+            raise ClinikoSlotUnavailableError(
+                "The selected appointment time is no longer available"
+            )
+        if response.status_code == 422:
+            self._raise_for_booking_validation_error(response)
+
+        try:
+            response.raise_for_status()
+            appointment = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ClinikoAPIError("Unable to reschedule Cliniko appointment") from exc
+
+        return self._simplify_rescheduled_appointment(
+            appointment_id,
+            appointment,
+        )
+
+    def _raise_for_appointment_response(self, response: httpx.Response) -> None:
+        if response.status_code in {401, 403}:
+            raise ClinikoAuthenticationError("Cliniko authentication failed")
+        if response.status_code == 429:
+            raise ClinikoRateLimitError(response.headers.get("X-RateLimit-Reset"))
+        if response.status_code == 404:
+            raise ClinikoAppointmentNotFoundError("Cliniko appointment not found")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ClinikoAPIError("Unable to retrieve Cliniko appointment") from exc
+
+    def _simplify_rescheduled_appointment(
+        self,
+        appointment_id: str,
+        appointment: Any,
+    ) -> dict[str, str]:
+        if not isinstance(appointment, dict):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+
+        returned_id = appointment.get("id")
+        response_starts_at = appointment.get("starts_at")
+        if returned_id is None or str(returned_id) != appointment_id:
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+        if not isinstance(response_starts_at, str):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+
+        try:
+            parsed_starts_at = datetime.fromisoformat(
+                response_starts_at.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ClinikoAPIError(
+                "Cliniko returned an invalid appointment timestamp"
+            ) from exc
+        if parsed_starts_at.tzinfo is None or parsed_starts_at.utcoffset() is None:
+            raise ClinikoAPIError(
+                "Cliniko returned an appointment timestamp without a timezone"
+            )
+
+        return {
+            "appointment_id": appointment_id,
+            "starts_at": parsed_starts_at.isoformat(),
+            "status": "rescheduled",
+        }
