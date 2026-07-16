@@ -34,6 +34,14 @@ class InvalidPhoneNumberError(ValueError):
     """Raised when a phone number cannot be normalized safely."""
 
 
+class ClinikoSlotUnavailableError(ClinikoAPIError):
+    """Raised when Cliniko rejects a no-longer-available appointment time."""
+
+
+class ClinikoInvalidAppointmentIDsError(ClinikoAPIError):
+    """Raised when Cliniko rejects an appointment's referenced resource IDs."""
+
+
 class ClinikoClient:
     def __init__(
         self,
@@ -442,3 +450,119 @@ class ClinikoClient:
             "phone": normalized_phone,
             "is_new_patient": is_new_patient,
         }
+
+    async def create_individual_appointment(
+        self,
+        patient_id: str,
+        business_id: str,
+        practitioner_id: str,
+        appointment_type_id: str,
+        starts_at: datetime,
+    ) -> dict[str, str]:
+        request_body = {
+            "patient_id": patient_id,
+            "business_id": business_id,
+            "practitioner_id": practitioner_id,
+            "appointment_type_id": appointment_type_id,
+            "starts_at": starts_at.isoformat(),
+        }
+
+        try:
+            # Appointment creation is intentionally attempted exactly once.
+            response = await self._client.post(
+                "/individual_appointments",
+                json=request_body,
+            )
+        except httpx.RequestError as exc:
+            raise ClinikoAPIError("Unable to create Cliniko appointment") from exc
+
+        if response.status_code in {401, 403}:
+            raise ClinikoAuthenticationError("Cliniko authentication failed")
+        if response.status_code == 429:
+            raise ClinikoRateLimitError(response.headers.get("X-RateLimit-Reset"))
+        if response.status_code == 409:
+            raise ClinikoSlotUnavailableError(
+                "The selected appointment time is no longer available"
+            )
+        if response.status_code == 404:
+            raise ClinikoInvalidAppointmentIDsError(
+                "One or more Cliniko IDs are invalid"
+            )
+        if response.status_code == 422:
+            self._raise_for_booking_validation_error(response)
+
+        try:
+            response.raise_for_status()
+            appointment = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ClinikoAPIError("Unable to create Cliniko appointment") from exc
+
+        if not isinstance(appointment, dict):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+
+        appointment_id = appointment.get("id")
+        response_starts_at = appointment.get("starts_at")
+        if appointment_id is None or not isinstance(response_starts_at, str):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+
+        try:
+            parsed_starts_at = datetime.fromisoformat(
+                response_starts_at.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ClinikoAPIError(
+                "Cliniko returned an invalid appointment timestamp"
+            ) from exc
+        if parsed_starts_at.tzinfo is None or parsed_starts_at.utcoffset() is None:
+            raise ClinikoAPIError(
+                "Cliniko returned an appointment timestamp without a timezone"
+            )
+
+        return {
+            "appointment_id": str(appointment_id),
+            "patient_id": patient_id,
+            "business_id": business_id,
+            "practitioner_id": practitioner_id,
+            "appointment_type_id": appointment_type_id,
+            "starts_at": parsed_starts_at.isoformat(),
+            "status": "booked",
+        }
+
+    def _raise_for_booking_validation_error(self, response: httpx.Response) -> None:
+        error_text = response.text.lower().replace("_", " ")
+        slot_indicators = (
+            "no longer available",
+            "not available",
+            "unavailable",
+            "conflict",
+            "overlap",
+            "already taken",
+        )
+        invalid_id_indicators = (
+            "invalid",
+            "not found",
+            "does not exist",
+            "must exist",
+        )
+        id_fields = (
+            "patient id",
+            "business id",
+            "practitioner id",
+            "appointment type id",
+        )
+
+        if any(indicator in error_text for indicator in slot_indicators):
+            raise ClinikoSlotUnavailableError(
+                "The selected appointment time is no longer available"
+            )
+        if any(field in error_text for field in id_fields) and any(
+            indicator in error_text for indicator in invalid_id_indicators
+        ):
+            raise ClinikoInvalidAppointmentIDsError(
+                "One or more Cliniko IDs are invalid"
+            )
+        raise ClinikoAPIError("Cliniko rejected the appointment request")

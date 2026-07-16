@@ -1,7 +1,7 @@
 import base64
 import json
 import unittest
-from datetime import date
+from datetime import date, datetime
 
 import httpx
 from pydantic import SecretStr
@@ -10,8 +10,10 @@ from backend.cliniko import (
     ClinikoAPIError,
     ClinikoAuthenticationError,
     ClinikoClient,
+    ClinikoInvalidAppointmentIDsError,
     ClinikoPatientConflictError,
     ClinikoRateLimitError,
+    ClinikoSlotUnavailableError,
 )
 from backend.config import Settings
 
@@ -423,3 +425,147 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
                     full_name="Jane Doe",
                     phone="+91 98765 43210",
                 )
+
+    async def test_create_individual_appointment_succeeds_once(self) -> None:
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(request.url.path, "/v1/individual_appointments")
+            self.assertEqual(
+                json.loads(request.content),
+                {
+                    "patient_id": "30",
+                    "business_id": "1",
+                    "practitioner_id": "2",
+                    "appointment_type_id": "3",
+                    "starts_at": "2026-07-20T10:00:00+05:30",
+                },
+            )
+            return httpx.Response(
+                201,
+                json={
+                    "id": "40",
+                    "starts_at": "2026-07-20T10:00:00+05:30",
+                    "ends_at": "2026-07-20T10:45:00+05:30",
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointment = await client.create_individual_appointment(
+                patient_id="30",
+                business_id="1",
+                practitioner_id="2",
+                appointment_type_id="3",
+                starts_at=datetime.fromisoformat("2026-07-20T10:00:00+05:30"),
+            )
+
+        self.assertEqual(request_count, 1)
+        self.assertEqual(
+            appointment,
+            {
+                "appointment_id": "40",
+                "patient_id": "30",
+                "business_id": "1",
+                "practitioner_id": "2",
+                "appointment_type_id": "3",
+                "starts_at": "2026-07-20T10:00:00+05:30",
+                "status": "booked",
+            },
+        )
+
+    async def test_create_individual_appointment_handles_unavailable_slot(
+        self,
+    ) -> None:
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return httpx.Response(
+                422,
+                json={"errors": {"starts_at": ["is no longer available"]}},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoSlotUnavailableError):
+                await client.create_individual_appointment(
+                    "30",
+                    "1",
+                    "2",
+                    "3",
+                    datetime.fromisoformat("2026-07-20T10:00:00+05:30"),
+                )
+
+        self.assertEqual(request_count, 1)
+
+    async def test_create_individual_appointment_handles_invalid_ids(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                422,
+                json={"errors": {"patient_id": ["is invalid"]}},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoInvalidAppointmentIDsError):
+                await client.create_individual_appointment(
+                    "999",
+                    "1",
+                    "2",
+                    "3",
+                    datetime.fromisoformat("2026-07-20T10:00:00+05:30"),
+                )
+
+    async def test_create_individual_appointment_handles_rate_limit(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                headers={"X-RateLimit-Reset": "1784534400"},
+                json={"error": "Rate limited"},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoRateLimitError) as context:
+                await client.create_individual_appointment(
+                    "30",
+                    "1",
+                    "2",
+                    "3",
+                    datetime.fromisoformat("2026-07-20T10:00:00+05:30"),
+                )
+
+        self.assertEqual(context.exception.reset_at, "1784534400")
+
+    async def test_create_individual_appointment_handles_upstream_failure(
+        self,
+    ) -> None:
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return httpx.Response(500, json={"error": "Server error"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAPIError):
+                await client.create_individual_appointment(
+                    "30",
+                    "1",
+                    "2",
+                    "3",
+                    datetime.fromisoformat("2026-07-20T10:00:00+05:30"),
+                )
+
+        self.assertEqual(request_count, 1)

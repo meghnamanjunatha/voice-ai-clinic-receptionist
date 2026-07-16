@@ -22,6 +22,32 @@ class PatientResponse(BaseModel):
     phone: str
     is_new_patient: bool
 
+
+class AppointmentCreate(BaseModel):
+    patient_id: str = Field(pattern=r"^[1-9]\d*$")
+    business_id: str = Field(pattern=r"^[1-9]\d*$")
+    practitioner_id: str = Field(pattern=r"^[1-9]\d*$")
+    appointment_type_id: str = Field(pattern=r"^[1-9]\d*$")
+    starts_at: datetime
+
+    @field_validator("starts_at")
+    @classmethod
+    def starts_at_must_include_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("starts_at must include a timezone")
+        return value
+
+
+class AppointmentResponse(BaseModel):
+    appointment_id: str
+    patient_id: str
+    business_id: str
+    practitioner_id: str
+    appointment_type_id: str
+    starts_at: datetime
+    status: str
+
+
 class AvailabilityRequest(BaseModel):
     specialty: str
     branch_id: int

@@ -6,12 +6,20 @@ from .cliniko import (
     ClinikoAPIError,
     ClinikoAuthenticationError,
     ClinikoClient,
+    ClinikoInvalidAppointmentIDsError,
     ClinikoPatientConflictError,
     ClinikoRateLimitError,
+    ClinikoSlotUnavailableError,
     InvalidPhoneNumberError,
 )
 from .config import get_settings
-from .schemas import AvailabilitySlot, PatientCreate, PatientResponse
+from .schemas import (
+    AppointmentCreate,
+    AppointmentResponse,
+    AvailabilitySlot,
+    PatientCreate,
+    PatientResponse,
+)
 
 app = FastAPI()
 
@@ -122,4 +130,44 @@ async def create_or_get_patient(patient: PatientCreate):
         raise HTTPException(
             status_code=502,
             detail="Unable to find or create patient in Cliniko",
+        ) from exc
+
+
+@app.post("/appointments", response_model=AppointmentResponse, status_code=201)
+async def create_appointment(appointment: AppointmentCreate):
+    try:
+        async with ClinikoClient(get_settings()) as client:
+            return await client.create_individual_appointment(
+                patient_id=appointment.patient_id,
+                business_id=appointment.business_id,
+                practitioner_id=appointment.practitioner_id,
+                appointment_type_id=appointment.appointment_type_id,
+                starts_at=appointment.starts_at,
+            )
+    except ClinikoSlotUnavailableError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="The selected appointment time is no longer available",
+        ) from exc
+    except ClinikoInvalidAppointmentIDsError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="One or more Cliniko IDs are invalid",
+        ) from exc
+    except ClinikoAuthenticationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Cliniko authentication failed",
+        ) from exc
+    except ClinikoRateLimitError as exc:
+        headers = {"X-RateLimit-Reset": exc.reset_at} if exc.reset_at else None
+        raise HTTPException(
+            status_code=429,
+            detail="Cliniko rate limit exceeded",
+            headers=headers,
+        ) from exc
+    except ClinikoAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to create appointment in Cliniko",
         ) from exc
