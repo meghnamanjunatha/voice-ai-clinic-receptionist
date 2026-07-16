@@ -48,3 +48,36 @@ class ClinikoClient:
             raise ClinikoAPIError("Cliniko returned an unexpected businesses response")
 
         return businesses
+
+    async def list_practitioners(self) -> list[dict[str, str | None]]:
+        try:
+            response = await self._client.get("/practitioners", params={"per_page": 100})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ClinikoAPIError(
+                "Unable to retrieve practitioners from Cliniko"
+            ) from exc
+
+        practitioners = (
+            payload.get("practitioners") if isinstance(payload, dict) else None
+        )
+        if not isinstance(practitioners, list):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected practitioners response"
+            )
+
+        essential_fields = []
+        for practitioner in practitioners:
+            if not isinstance(practitioner, dict) or "id" not in practitioner:
+                raise ClinikoAPIError(
+                    "Cliniko returned an unexpected practitioner record"
+                )
+            essential_fields.append(
+                {
+                    "id": str(practitioner["id"]),
+                    "full_name": practitioner.get("display_name"),
+                }
+            )
+
+        return essential_fields

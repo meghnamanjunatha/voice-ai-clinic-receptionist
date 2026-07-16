@@ -25,6 +25,16 @@ async def list_cliniko_businesses():
     except ClinikoAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+
+@app.get("/cliniko/practitioners")
+async def list_cliniko_practitioners():
+    try:
+        async with ClinikoClient(get_settings()) as client:
+            return await client.list_practitioners()
+    except ClinikoAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/patients")
 def create_or_get_patient(patient: PatientCreate, db: Session = Depends(get_db)):
     existing_patient = db.query(Patient).filter(

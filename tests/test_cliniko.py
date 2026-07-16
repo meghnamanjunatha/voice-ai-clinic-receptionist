@@ -52,3 +52,42 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             with self.assertRaises(ClinikoAPIError):
                 await client.list_businesses()
+
+    async def test_list_practitioners_returns_only_essential_fields(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/practitioners")
+            self.assertEqual(request.url.params["per_page"], "100")
+            return httpx.Response(
+                200,
+                json={
+                    "practitioners": [
+                        {
+                            "id": "10",
+                            "display_name": "Dr Alice Smith",
+                            "first_name": "Alice",
+                            "last_name": "Smith",
+                            "active": True,
+                        }
+                    ]
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            practitioners = await client.list_practitioners()
+
+        self.assertEqual(
+            practitioners,
+            [{"id": "10", "full_name": "Dr Alice Smith"}],
+        )
+
+    async def test_list_practitioners_rejects_upstream_error(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "Server error"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAPIError):
+                await client.list_practitioners()
