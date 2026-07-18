@@ -1,7 +1,8 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -28,6 +29,10 @@ class ClinikoRateLimitError(ClinikoAPIError):
 
 class ClinikoPatientConflictError(ClinikoAPIError):
     """Raised when a phone number belongs to multiple Cliniko patients."""
+
+
+class ClinikoPatientNotFoundError(ClinikoAPIError):
+    """Raised when a patient does not exist in Cliniko."""
 
 
 class InvalidPhoneNumberError(ValueError):
@@ -91,7 +96,7 @@ class ClinikoClient:
     def _log_response_error(
         self,
         response: httpx.Response,
-        query_params: dict[str, str | int],
+        query_params: dict[str, Any],
     ) -> None:
         logger.error(
             "Cliniko request failed: status_code=%s requested_url=%s "
@@ -100,6 +105,28 @@ class ClinikoClient:
             self._redact_api_key(str(response.request.url)),
             query_params,
             self._redact_api_key(response.text),
+        )
+
+    def _log_appointment_lookup_failure(
+        self,
+        *,
+        query_params: dict[str, Any],
+        exception: Exception,
+        response: httpx.Response | None = None,
+        request_url: str | None = None,
+    ) -> None:
+        logger.error(
+            "Cliniko patient appointment lookup failed: status_code=%s "
+            "requested_url=%s query_params=%s response_body=%s "
+            "exception_type=%s exception_message=%s",
+            response.status_code if response is not None else "unavailable",
+            self._redact_api_key(
+                str(response.request.url) if response is not None else request_url or "unavailable"
+            ),
+            query_params,
+            self._redact_api_key(response.text) if response is not None else "unavailable",
+            type(exception).__name__,
+            self._redact_api_key(str(exception)),
         )
 
     @staticmethod
@@ -326,6 +353,245 @@ class ClinikoClient:
         return self._simplify_patient(
             patient, normalized_phone, is_new_patient=True
         )
+
+    async def list_patient_appointments(
+        self,
+        patient_id: str,
+        include_past: bool = False,
+    ) -> list[dict[str, str]]:
+        await self._verify_patient_exists(patient_id)
+
+        now = datetime.now(UTC)
+        filters = [f"patient_id:={patient_id}"]
+        if not include_past:
+            filters.append(f"starts_at:>{now.isoformat().replace('+00:00', 'Z')}")
+
+        appointments: list[dict[str, str]] = []
+        page = 1
+        while True:
+            query_params: dict[str, str | int | list[str]] = {
+                "page": page,
+                "per_page": 100,
+                "sort": "starts_at:asc",
+                "q[]": filters,
+            }
+            response = await self._get_appointment_lookup_page(
+                "/individual_appointments",
+                query_params,
+            )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                self._log_appointment_lookup_failure(
+                    response=response,
+                    query_params=query_params,
+                    exception=exc,
+                )
+                raise ClinikoAPIError(
+                    "Cliniko returned an invalid appointments response"
+                ) from exc
+
+            records = (
+                payload.get("individual_appointments")
+                if isinstance(payload, dict)
+                else None
+            )
+            total_entries = payload.get("total_entries") if isinstance(payload, dict) else None
+            if not isinstance(records, list) or not isinstance(total_entries, int):
+                exc = ClinikoAPIError(
+                    "Cliniko returned an unexpected appointments response"
+                )
+                self._log_appointment_lookup_failure(
+                    response=response,
+                    query_params=query_params,
+                    exception=exc,
+                )
+                raise exc
+
+            for record in records:
+                try:
+                    simplified = self._simplify_patient_appointment(
+                        record,
+                        expected_patient_id=patient_id,
+                    )
+                except ClinikoAPIError as exc:
+                    self._log_appointment_lookup_failure(
+                        response=response,
+                        query_params=query_params,
+                        exception=exc,
+                    )
+                    raise
+                if simplified["status"] == "cancelled":
+                    continue
+                starts_at = datetime.fromisoformat(simplified["starts_at"])
+                if include_past or starts_at >= now:
+                    appointments.append(simplified)
+
+            if page * 100 >= total_entries or not records:
+                break
+            page += 1
+
+        appointments.sort(key=lambda appointment: appointment["starts_at"])
+        return appointments
+
+    async def _verify_patient_exists(self, patient_id: str) -> None:
+        query_params: dict[str, str | int | list[str]] = {}
+        response = await self._get_appointment_lookup_page(
+            f"/patients/{patient_id}",
+            query_params,
+        )
+        try:
+            patient = response.json()
+        except ValueError as exc:
+            self._log_appointment_lookup_failure(
+                response=response,
+                query_params=query_params,
+                exception=exc,
+            )
+            raise ClinikoAPIError("Cliniko returned an invalid patient response") from exc
+        if not isinstance(patient, dict) or str(patient.get("id")) != patient_id:
+            exc = ClinikoAPIError("Cliniko returned an unexpected patient response")
+            self._log_appointment_lookup_failure(
+                response=response,
+                query_params=query_params,
+                exception=exc,
+            )
+            raise exc
+
+    async def _get_appointment_lookup_page(
+        self,
+        path: str,
+        query_params: dict[str, str | int | list[str]],
+    ) -> httpx.Response:
+        try:
+            response = await self._client.get(path, params=query_params)
+        except httpx.RequestError as exc:
+            self._log_appointment_lookup_failure(
+                request_url=str(exc.request.url),
+                query_params=query_params,
+                exception=exc,
+            )
+            raise ClinikoAPIError(
+                "Unable to retrieve patient appointments from Cliniko"
+            ) from exc
+
+        if response.status_code in {401, 403}:
+            self._log_response_error(response, query_params)
+            raise ClinikoAuthenticationError("Cliniko authentication failed")
+        if response.status_code == 404:
+            self._log_response_error(response, query_params)
+            raise ClinikoPatientNotFoundError("Cliniko patient not found")
+        if response.status_code == 429:
+            self._log_response_error(response, query_params)
+            raise ClinikoRateLimitError(response.headers.get("X-RateLimit-Reset"))
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            self._log_appointment_lookup_failure(
+                response=response,
+                query_params=query_params,
+                exception=exc,
+            )
+            raise ClinikoAPIError(
+                "Unable to retrieve patient appointments from Cliniko"
+            ) from exc
+        return response
+
+    def _simplify_patient_appointment(
+        self,
+        appointment: Any,
+        expected_patient_id: str,
+    ) -> dict[str, str]:
+        if not isinstance(appointment, dict):
+            raise ClinikoAPIError(
+                "Cliniko appointment record must be an object"
+            )
+        for field in ("id", "starts_at"):
+            if appointment.get(field) is None:
+                raise ClinikoAPIError(
+                    f"Cliniko appointment is missing required field '{field}'"
+                )
+
+        patient_id = self._extract_linked_resource_id(appointment, "patient")
+        business_id = self._extract_linked_resource_id(appointment, "business")
+        practitioner_id = self._extract_linked_resource_id(
+            appointment, "practitioner"
+        )
+        appointment_type_id = self._extract_linked_resource_id(
+            appointment, "appointment_type"
+        )
+        if patient_id != expected_patient_id:
+            raise ClinikoAPIError("Cliniko returned an appointment for another patient")
+
+        try:
+            starts_at = datetime.fromisoformat(
+                str(appointment["starts_at"]).replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ClinikoAPIError(
+                "Cliniko returned an invalid appointment timestamp"
+            ) from exc
+        if starts_at.tzinfo is None or starts_at.utcoffset() is None:
+            raise ClinikoAPIError(
+                "Cliniko returned an appointment timestamp without a timezone"
+            )
+
+        if appointment.get("cancelled_at") is not None:
+            status = "cancelled"
+        elif appointment.get("deleted_at") is not None:
+            status = "deleted"
+        elif appointment.get("did_not_arrive") is True:
+            status = "did_not_arrive"
+        elif appointment.get("patient_arrived") is True:
+            status = "arrived"
+        else:
+            status = "booked"
+
+        return {
+            "appointment_id": str(appointment["id"]),
+            "patient_id": patient_id,
+            "practitioner_id": practitioner_id,
+            "business_id": business_id,
+            "appointment_type_id": appointment_type_id,
+            "starts_at": starts_at.isoformat(),
+            "status": status,
+        }
+
+    def _extract_linked_resource_id(
+        self,
+        appointment: dict[str, Any],
+        resource_name: str,
+    ) -> str:
+        link_field = f"{resource_name}.links.self"
+        resource = appointment.get(resource_name)
+        if not isinstance(resource, dict):
+            raise ClinikoAPIError(
+                f"Cliniko appointment is missing required link '{link_field}'"
+            )
+        links = resource.get("links")
+        if not isinstance(links, dict):
+            raise ClinikoAPIError(
+                f"Cliniko appointment is missing required link '{link_field}'"
+            )
+        self_url = links.get("self")
+        if not isinstance(self_url, str) or not self_url.strip():
+            raise ClinikoAPIError(
+                f"Cliniko appointment is missing required link '{link_field}'"
+            )
+
+        path_segments = [
+            segment for segment in urlparse(self_url).path.split("/") if segment
+        ]
+        if not path_segments:
+            raise ClinikoAPIError(
+                f"Cliniko appointment has invalid link '{link_field}'"
+            )
+        resource_id = path_segments[-1]
+        if not resource_id.isdigit() or resource_id == "0":
+            raise ClinikoAPIError(
+                f"Cliniko appointment has invalid resource ID in link '{link_field}'"
+            )
+        return resource_id
 
     async def _find_patients_by_phone(
         self,

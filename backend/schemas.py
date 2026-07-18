@@ -49,6 +49,23 @@ class AppointmentResponse(BaseModel):
     status: str
 
 
+class PatientAppointmentResponse(BaseModel):
+    appointment_id: str
+    patient_id: str
+    practitioner_id: str
+    business_id: str
+    appointment_type_id: str
+    starts_at: datetime
+    status: str
+
+    @field_validator("starts_at")
+    @classmethod
+    def starts_at_must_include_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("starts_at must include a timezone")
+        return value
+
+
 class AppointmentReschedule(BaseModel):
     starts_at: datetime
 

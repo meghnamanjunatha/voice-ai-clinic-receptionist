@@ -7,8 +7,7 @@
     "For POST and PATCH tools, enable Retell's Payload: args only option so FastAPI receives the flat JSON body it expects.",
     "Do not put the Cliniko API key in Retell. The FastAPI service owns Cliniko authentication.",
     "Before a live launch, verify X-Retell-Signature in FastAPI and decide how to prevent duplicate writes because Retell may retry failed custom-function calls.",
-    "The current backend has no endpoint that finds a caller's upcoming appointment. Reschedule and cancellation therefore require a trusted appointment_id supplied by prior application context; never ask a patient to know this internal ID and never guess it.",
-    "Retell URL placeholders use dynamic-variable notation. appointment_id must already be present as a trusted dynamic variable for the two path-based tools."
+    "Retell URL placeholders use dynamic-variable notation. patient_id and appointment_id are trusted IDs returned by earlier tools and must never be requested from the caller."
   ],
   "tools": [
     {
@@ -47,6 +46,39 @@
         "phone": "+61412345678",
         "is_new_patient": false
       }
+    },
+    {
+      "type": "custom",
+      "name": "list_patient_appointments",
+      "description": "List a known Cliniko patient's non-cancelled appointments in chronological order. By default returns only upcoming appointments. Use the patient_id returned by find_or_create_patient; never ask the caller for an internal ID.",
+      "method": "GET",
+      "url": "{{backend_base_url}}/patients/{{patient_id}}/appointments",
+      "path_dynamic_variables": {
+        "patient_id": "Trusted Cliniko patient ID returned by find_or_create_patient."
+      },
+      "query_parameters": {
+        "include_past": {
+          "required": false,
+          "const": false,
+          "description": "Keep false for voice scheduling so only upcoming, non-cancelled appointments are returned.",
+          "example": false
+        }
+      },
+      "request_example": {
+        "path": {"patient_id": "123456789"},
+        "query": {"include_past": false}
+      },
+      "response_example": [
+        {
+          "appointment_id": "987654321",
+          "patient_id": "123456789",
+          "practitioner_id": "2001",
+          "business_id": "1001",
+          "appointment_type_id": "3001",
+          "starts_at": "2026-07-21T09:30:00+10:00",
+          "status": "booked"
+        }
+      ]
     },
     {
       "type": "custom",
@@ -136,7 +168,7 @@
     {
       "type": "custom",
       "name": "reschedule_appointment",
-      "description": "Move a known Cliniko appointment after the caller explicitly confirms the appointment and new timezone-aware start time. Requires a trusted appointment_id in Retell context. Call once only; do not automatically retry.",
+      "description": "Move the Cliniko appointment selected from list_patient_appointments after the caller explicitly confirms it and the new timezone-aware start time. Call once only; do not automatically retry.",
       "method": "PATCH",
       "url": "{{backend_base_url}}/appointments/{{appointment_id}}",
       "path_dynamic_variables": {
@@ -164,7 +196,7 @@
     {
       "type": "custom",
       "name": "cancel_appointment",
-      "description": "Cancel a known Cliniko appointment without deleting it, after the caller explicitly confirms the appointment and cancellation. Requires a trusted appointment_id in Retell context. Call once only; do not automatically retry.",
+      "description": "Cancel the Cliniko appointment selected from list_patient_appointments without deleting it, after the caller explicitly confirms the appointment and cancellation. Call once only; do not automatically retry.",
       "method": "POST",
       "url": "{{backend_base_url}}/appointments/{{appointment_id}}/cancel",
       "path_dynamic_variables": {

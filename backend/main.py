@@ -12,6 +12,7 @@ from .cliniko import (
     ClinikoInvalidAppointmentIDsError,
     ClinikoInvalidCancellationReasonError,
     ClinikoPatientConflictError,
+    ClinikoPatientNotFoundError,
     ClinikoRateLimitError,
     ClinikoSlotUnavailableError,
     InvalidPhoneNumberError,
@@ -26,6 +27,7 @@ from .schemas import (
     AppointmentResponse,
     AvailabilitySlot,
     PatientCreate,
+    PatientAppointmentResponse,
     PatientResponse,
 )
 
@@ -138,6 +140,38 @@ async def create_or_get_patient(patient: PatientCreate):
         raise HTTPException(
             status_code=502,
             detail="Unable to find or create patient in Cliniko",
+        ) from exc
+
+
+@app.get(
+    "/patients/{patient_id}/appointments",
+    response_model=list[PatientAppointmentResponse],
+)
+async def list_patient_appointments(
+    patient_id: str = Path(pattern=r"^[1-9]\d*$"),
+    include_past: bool = Query(default=False),
+):
+    try:
+        async with ClinikoClient(get_settings()) as client:
+            return await client.list_patient_appointments(
+                patient_id=patient_id,
+                include_past=include_past,
+            )
+    except ClinikoPatientNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Cliniko patient not found") from exc
+    except ClinikoAuthenticationError as exc:
+        raise HTTPException(status_code=502, detail="Cliniko authentication failed") from exc
+    except ClinikoRateLimitError as exc:
+        headers = {"X-RateLimit-Reset": exc.reset_at} if exc.reset_at else None
+        raise HTTPException(
+            status_code=429,
+            detail="Cliniko rate limit exceeded",
+            headers=headers,
+        ) from exc
+    except ClinikoAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to retrieve patient appointments from Cliniko",
         ) from exc
 
 

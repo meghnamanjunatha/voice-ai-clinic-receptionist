@@ -16,6 +16,7 @@ from backend.cliniko import (
     ClinikoInvalidAppointmentIDsError,
     ClinikoInvalidCancellationReasonError,
     ClinikoPatientConflictError,
+    ClinikoPatientNotFoundError,
     ClinikoRateLimitError,
     ClinikoSlotUnavailableError,
 )
@@ -429,6 +430,274 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
                     full_name="Jane Doe",
                     phone="+91 98765 43210",
                 )
+
+    async def test_list_patient_appointments_filters_sorts_and_paginates(
+        self,
+    ) -> None:
+        appointment_requests = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal appointment_requests
+            if request.url.path == "/v1/patients/30":
+                return httpx.Response(200, json={"id": "30"})
+
+            appointment_requests += 1
+            self.assertEqual(request.url.path, "/v1/individual_appointments")
+            self.assertEqual(request.url.params["per_page"], "100")
+            self.assertEqual(request.url.params["sort"], "starts_at:asc")
+            self.assertIn("patient_id:=30", request.url.params.get_list("q[]"))
+            self.assertTrue(
+                any(
+                    value.startswith("starts_at:>")
+                    for value in request.url.params.get_list("q[]")
+                )
+            )
+
+            if request.url.params["page"] == "1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "individual_appointments": [
+                            {
+                                "id": "42",
+                                "patient": {"links": {"self": "https://api.au5.cliniko.com/v1/patients/30"}},
+                                "practitioner": {"links": {"self": "https://api.au5.cliniko.com/v1/practitioners/2"}},
+                                "business": {"links": {"self": "https://api.au5.cliniko.com/v1/businesses/1"}},
+                                "appointment_type": {"links": {"self": "https://api.au5.cliniko.com/v1/appointment_types/3"}},
+                                "starts_at": "2099-07-22T10:00:00+10:00",
+                                "cancelled_at": None,
+                            },
+                            {
+                                "id": "41",
+                                "patient": {"links": {"self": "https://api.au5.cliniko.com/v1/patients/30"}},
+                                "practitioner": {"links": {"self": "https://api.au5.cliniko.com/v1/practitioners/2"}},
+                                "business": {"links": {"self": "https://api.au5.cliniko.com/v1/businesses/1"}},
+                                "appointment_type": {"links": {"self": "https://api.au5.cliniko.com/v1/appointment_types/3"}},
+                                "starts_at": "2099-07-21T09:00:00+10:00",
+                                "cancelled_at": "2099-07-01T00:00:00Z",
+                            },
+                        ],
+                        "total_entries": 101,
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "individual_appointments": [
+                        {
+                            "id": "40",
+                            "patient": {"links": {"self": "https://api.au5.cliniko.com/v1/patients/30"}},
+                            "practitioner": {"links": {"self": "https://api.au5.cliniko.com/v1/practitioners/4"}},
+                            "business": {"links": {"self": "https://api.au5.cliniko.com/v1/businesses/5"}},
+                            "appointment_type": {"links": {"self": "https://api.au5.cliniko.com/v1/appointment_types/6"}},
+                            "starts_at": "2099-07-20T08:00:00Z",
+                            "cancelled_at": None,
+                        }
+                    ],
+                    "total_entries": 101,
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointments = await client.list_patient_appointments("30")
+
+        self.assertEqual(appointment_requests, 2)
+        self.assertEqual([item["appointment_id"] for item in appointments], ["40", "42"])
+        self.assertEqual(
+            appointments[0],
+            {
+                "appointment_id": "40",
+                "patient_id": "30",
+                "practitioner_id": "4",
+                "business_id": "5",
+                "appointment_type_id": "6",
+                "starts_at": "2099-07-20T08:00:00+00:00",
+                "status": "booked",
+            },
+        )
+
+    async def test_list_patient_appointments_can_include_past(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/patients/30":
+                return httpx.Response(200, json={"id": "30"})
+            self.assertEqual(request.url.params.get_list("q[]"), ["patient_id:=30"])
+            return httpx.Response(
+                200,
+                json={
+                    "individual_appointments": [
+                        {
+                            "id": "39",
+                            "patient": {"links": {"self": "https://api.au5.cliniko.com/v1/patients/30"}},
+                            "practitioner": {"links": {"self": "https://api.au5.cliniko.com/v1/practitioners/2"}},
+                            "business": {"links": {"self": "https://api.au5.cliniko.com/v1/businesses/1"}},
+                            "appointment_type": {"links": {"self": "https://api.au5.cliniko.com/v1/appointment_types/3"}},
+                            "starts_at": "2000-01-01T10:00:00Z",
+                            "cancelled_at": None,
+                        }
+                    ],
+                    "total_entries": 1,
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointments = await client.list_patient_appointments(
+                "30", include_past=True
+            )
+
+        self.assertEqual([item["appointment_id"] for item in appointments], ["39"])
+
+    async def test_patient_appointment_status_is_derived_from_cliniko_fields(
+        self,
+    ) -> None:
+        base_appointment = {
+            "id": "40",
+            "patient": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/patients/30"
+                }
+            },
+            "business": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/businesses/1"
+                }
+            },
+            "practitioner": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/practitioners/2"
+                }
+            },
+            "appointment_type": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/appointment_types/3"
+                }
+            },
+            "starts_at": "2099-07-20T08:00:00Z",
+            "cancelled_at": None,
+            "deleted_at": None,
+            "did_not_arrive": False,
+            "patient_arrived": False,
+        }
+        cases = (
+            ({"cancelled_at": "2099-07-01T00:00:00Z"}, "cancelled"),
+            ({"deleted_at": "2099-07-01T00:00:00Z"}, "deleted"),
+            ({"did_not_arrive": True}, "did_not_arrive"),
+            ({"patient_arrived": True}, "arrived"),
+            ({}, "booked"),
+        )
+
+        async with ClinikoClient(make_settings()) as client:
+            for overrides, expected_status in cases:
+                with self.subTest(expected_status=expected_status):
+                    appointment = {**base_appointment, **overrides}
+                    simplified = client._simplify_patient_appointment(
+                        appointment,
+                        expected_patient_id="30",
+                    )
+                    self.assertEqual(simplified["status"], expected_status)
+
+    async def test_patient_appointment_parser_identifies_missing_link(self) -> None:
+        appointment = {
+            "id": "40",
+            "patient": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/patients/30"
+                }
+            },
+            "business": {},
+            "practitioner": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/practitioners/2"
+                }
+            },
+            "appointment_type": {
+                "links": {
+                    "self": "https://api.au5.cliniko.com/v1/appointment_types/3"
+                }
+            },
+            "starts_at": "2099-07-20T08:00:00Z",
+        }
+
+        async with ClinikoClient(make_settings()) as client:
+            with self.assertRaisesRegex(
+                ClinikoAPIError,
+                r"missing required link 'business\.links\.self'",
+            ):
+                client._simplify_patient_appointment(
+                    appointment,
+                    expected_patient_id="30",
+                )
+
+    async def test_list_patient_appointments_returns_empty_list(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/patients/30":
+                return httpx.Response(200, json={"id": "30"})
+            return httpx.Response(
+                200,
+                json={"individual_appointments": [], "total_entries": 0},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointments = await client.list_patient_appointments("30")
+
+        self.assertEqual(appointments, [])
+
+    async def test_list_patient_appointments_handles_missing_patient(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": "Not found"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoPatientNotFoundError):
+                await client.list_patient_appointments("999")
+
+    async def test_list_patient_appointments_handles_rate_limit(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                headers={"X-RateLimit-Reset": "1784534400"},
+                json={"error": "Rate limited"},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoRateLimitError) as context:
+                await client.list_patient_appointments("30")
+
+        self.assertEqual(context.exception.reset_at, "1784534400")
+
+    async def test_list_patient_appointments_handles_upstream_failure(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/patients/30":
+                return httpx.Response(200, json={"id": "30"})
+            return httpx.Response(
+                500,
+                text="Server error containing test-key-au1",
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertLogs("backend.cliniko", level="ERROR") as logs:
+                with self.assertRaises(ClinikoAPIError):
+                    await client.list_patient_appointments("30")
+
+        log_output = "\n".join(logs.output)
+        self.assertIn("status_code=500", log_output)
+        self.assertIn("requested_url=https://api.au1.cliniko.com/v1/individual_appointments", log_output)
+        self.assertIn("'q[]': ['patient_id:=30'", log_output)
+        self.assertIn("response_body=Server error containing [REDACTED]", log_output)
+        self.assertIn("exception_type=HTTPStatusError", log_output)
+        self.assertIn("exception_message=Server error", log_output)
+        self.assertNotIn("test-key-au1", log_output)
+        self.assertNotIn("Authorization", log_output)
 
     async def test_create_individual_appointment_succeeds_once(self) -> None:
         request_count = 0
