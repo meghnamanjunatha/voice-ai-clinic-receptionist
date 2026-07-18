@@ -219,3 +219,10 @@ __marimo__/
 
 backend/clinic.db
 *.db
+
+# Project-local secrets, state, caches, and virtual environments
+.env
+**/clinic.db
+**/__pycache__/
+**/.venv/
+**/venv/

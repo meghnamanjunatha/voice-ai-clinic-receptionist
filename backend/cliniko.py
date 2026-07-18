@@ -70,6 +70,8 @@ class ClinikoClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = settings.cliniko_api_key.get_secret_value()
+        if settings.cliniko_api_base_url is None:
+            raise ValueError("Cliniko API base URL is not configured")
         self._client = httpx.AsyncClient(
             base_url=settings.cliniko_api_base_url.rstrip("/"),
             auth=(self._api_key, ""),
