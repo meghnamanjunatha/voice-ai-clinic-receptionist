@@ -14,7 +14,7 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
 
 2. **Description**
 
-   Find a Cliniko patient by normalized phone number, or create the patient when no match exists. This can write data, so confirm the caller's full name and phone number before calling. If multiple patients share the phone number, stop and escalate instead of guessing.
+   Find a Cliniko patient by normalized phone number, or create the patient when no match exists. Use clearly heard, valid name and phone values without repeating them; clarify only unclear, incomplete, invalid, or unreliable input. If multiple patients share the phone number, stop and escalate instead of guessing.
 
 3. **HTTP method**
 
@@ -51,13 +51,13 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
          "type": "string",
          "minLength": 1,
          "maxLength": 511,
-         "description": "The caller's confirmed full name."
+         "description": "The caller's clearly provided full name."
        },
        "phone": {
          "type": "string",
          "minLength": 1,
          "maxLength": 50,
-         "description": "The caller's confirmed phone number, including country code when known."
+         "description": "The caller's valid phone number, including country code when known."
        }
      },
      "required": ["full_name", "phone"]
@@ -105,13 +105,13 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
 
 15. **Dependencies on earlier tool results**
 
-    None. It depends on caller-confirmed `full_name` and `phone`. Its stored `patient_id` is required by `list_patient_appointments` and `book_appointment`.
+    None. It depends on clearly provided, valid `full_name` and `phone` values. Its stored `patient_id` is required by `list_patient_appointments` and `book_appointment`.
 
 16. **Common configuration mistakes**
 
     - Leaving Payload: args only disabled.
     - Putting `full_name` or `phone` in query parameters.
-    - Calling before confirming the spelling and phone number even though the tool may create a patient.
+    - Repeating or spelling back a clearly heard name or valid phone number unnecessarily.
     - Adding Cliniko or Retell API keys as headers.
     - Testing repeatedly with new phone numbers and unintentionally creating patients.
 

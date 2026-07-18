@@ -14,7 +14,7 @@
     {
       "type": "custom",
       "name": "find_or_create_patient",
-      "description": "Find a Cliniko patient by normalized phone number, or create the patient when no match exists. This can write data, so confirm the caller's full name and phone number before calling. If multiple patients share the phone number, stop and escalate instead of guessing.",
+      "description": "Find a Cliniko patient by normalized phone number, or create the patient when no match exists. Use clearly heard, valid name and phone values without repeating them; clarify only unclear, incomplete, invalid, or unreliable input. If multiple patients share the phone number, stop and escalate instead of guessing.",
       "method": "POST",
       "url": "{{backend_base_url}}/patients",
       "payload_args_only": true,
@@ -26,13 +26,13 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 511,
-            "description": "The caller's confirmed full name."
+            "description": "The caller's clearly provided full name."
           },
           "phone": {
             "type": "string",
             "minLength": 1,
             "maxLength": 50,
-            "description": "The caller's confirmed phone number, including country code when known."
+            "description": "The caller's valid phone number, including country code when known."
           }
         },
         "required": ["full_name", "phone"]
