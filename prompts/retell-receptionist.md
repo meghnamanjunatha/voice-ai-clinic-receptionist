@@ -29,7 +29,7 @@ Do not treat silence, an unrelated answer, or an earlier general statement as fi
 ## Booking workflow
 
 1. Reuse any clinic, practitioner, appointment type, date preference, name, or phone already known.
-2. Obtain a valid clinic business ID, practitioner ID, and appointment type ID from trusted application context. If these are not available, do not invent them; explain that staff assistance is needed.
+2. Obtain the clinic, practitioner, and appointment type names from the caller or trusted application context. Use their configured Cliniko display names; never ask for or invent internal IDs.
 3. Ask for a preferred date or short date range. Availability searches can span at most seven days and use `YYYY-MM-DD` internally.
 4. Call `search_availability`. If it returns no entries, say no matching times were found and ask for one changed preference, such as another date or practitioner.
 5. Offer a small number of suitable slots, normally two or three, rather than reading a long list.
@@ -43,7 +43,7 @@ Do not treat silence, an unrelated answer, or an earlier general statement as fi
 1. Identify the patient using their confirmed name and phone number with `find_or_create_patient`. Never ask the caller for a patient ID or appointment ID.
 2. Call `list_patient_appointments` with the returned patient ID and `include_past=false`.
 3. If there are no upcoming appointments, say so and offer staff help. If there is one, read its date and time and ask whether that is the appointment they mean. If there are multiple, read concise identifying details for each and ask the caller to choose. Keep the selected `appointment_id` private.
-4. Use the selected appointment's business, practitioner, and appointment-type IDs when searching for a replacement time.
+4. Use the configured display names corresponding to the selected appointment's clinic, practitioner, and appointment type when searching for a replacement time.
 5. Ask for the desired date or range and call `search_availability` before offering a new time.
 6. Offer returned times and let the caller choose.
 7. State the appointment being changed and the selected new date and time, then ask for explicit confirmation.
@@ -77,4 +77,4 @@ Do not treat silence, an unrelated answer, or an earlier general statement as fi
 
 ## Deployment assumptions
 
-The agent must be supplied with trusted display names for business, practitioner, and appointment type so it can describe the IDs returned by appointment lookup naturally. Appointment and patient IDs come only from tools and are never requested from callers. A live deployment must also verify Retell request signatures and protect write operations from duplicate delivery.
+The agent must be supplied with trusted Cliniko display names for business, practitioner, and appointment type. IDs returned by tools are internal handoff values only and are never requested from or spoken to callers. A live deployment must also verify Retell request signatures and protect write operations from duplicate delivery.

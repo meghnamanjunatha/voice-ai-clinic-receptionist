@@ -88,20 +88,20 @@
       "method": "GET",
       "url": "{{backend_base_url}}/availability",
       "query_parameters": {
-        "business_id": {
+        "business_name": {
           "required": true,
-          "description": "Confirmed Cliniko business ID as a string.",
-          "example": "1001"
+          "description": "Clinic business name as shown in Cliniko.",
+          "example": "Whitefield"
         },
-        "practitioner_id": {
+        "practitioner_name": {
           "required": true,
-          "description": "Confirmed Cliniko practitioner ID as a string.",
-          "example": "2001"
+          "description": "Practitioner display name as shown in Cliniko.",
+          "example": "Dr. Ananya"
         },
-        "appointment_type_id": {
+        "appointment_type_name": {
           "required": true,
-          "description": "Confirmed Cliniko appointment type ID as a string.",
-          "example": "3001"
+          "description": "Appointment type name as shown in Cliniko.",
+          "example": "Initial Dermatology"
         },
         "from_date": {
           "required": true,
@@ -115,9 +115,9 @@
         }
       },
       "request_example": {
-        "business_id": "1001",
-        "practitioner_id": "2001",
-        "appointment_type_id": "3001",
+        "business_name": "Whitefield",
+        "practitioner_name": "Dr. Ananya",
+        "appointment_type_name": "Initial Dermatology",
         "from_date": "2026-07-20",
         "to_date": "2026-07-24"
       },

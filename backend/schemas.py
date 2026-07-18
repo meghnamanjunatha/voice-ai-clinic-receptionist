@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import IntEnum
 
 from pydantic import BaseModel, Field, field_validator
@@ -119,9 +119,20 @@ class RetellAppointmentCancellation(AppointmentCancellation):
     appointment_id: str = Field(pattern=r"^[1-9]\d*$")
 
 
-class AvailabilityRequest(BaseModel):
-    specialty: str
-    branch_id: int
+class AvailabilitySearchRequest(BaseModel):
+    business_name: str = Field(min_length=1, max_length=511)
+    practitioner_name: str = Field(min_length=1, max_length=511)
+    appointment_type_name: str = Field(min_length=1, max_length=511)
+    from_date: date
+    to_date: date
+
+    @field_validator("business_name", "practitioner_name", "appointment_type_name")
+    @classmethod
+    def normalize_entity_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name must not be blank")
+        return normalized
 
 
 class AvailabilitySlot(BaseModel):

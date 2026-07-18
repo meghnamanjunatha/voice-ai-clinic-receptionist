@@ -1,4 +1,4 @@
-from datetime import date
+from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Path, Query
 
@@ -18,6 +18,13 @@ from .cliniko import (
     InvalidPhoneNumberError,
 )
 from .config import get_settings
+from .cliniko_resolution import (
+    ClinikoEntityConflictError,
+    ClinikoEntityNotFoundError,
+    get_appointment_type_id_by_name,
+    get_business_id_by_name,
+    get_practitioner_id_by_name,
+)
 from .retell import router as retell_router
 from .schemas import (
     AppointmentCancellation,
@@ -26,6 +33,7 @@ from .schemas import (
     AppointmentReschedule,
     AppointmentRescheduleResponse,
     AppointmentResponse,
+    AvailabilitySearchRequest,
     AvailabilitySlot,
     PatientCreate,
     PatientAppointmentResponse,
@@ -70,18 +78,14 @@ async def list_cliniko_appointment_types():
 
 @app.get("/availability", response_model=list[AvailabilitySlot])
 async def list_availability(
-    business_id: str,
-    practitioner_id: str,
-    appointment_type_id: str,
-    from_date: date = Query(),
-    to_date: date = Query(),
+    search: Annotated[AvailabilitySearchRequest, Query()],
 ):
-    if to_date < from_date:
+    if search.to_date < search.from_date:
         raise HTTPException(
             status_code=422,
             detail="to_date must be on or after from_date",
         )
-    if (to_date - from_date).days > 7:
+    if (search.to_date - search.from_date).days > 7:
         raise HTTPException(
             status_code=422,
             detail="Availability searches cannot span more than 7 days",
@@ -89,13 +93,26 @@ async def list_availability(
 
     try:
         async with ClinikoClient(get_settings()) as client:
+            business_id = await get_business_id_by_name(
+                client, search.business_name
+            )
+            practitioner_id = await get_practitioner_id_by_name(
+                client, search.practitioner_name
+            )
+            appointment_type_id = await get_appointment_type_id_by_name(
+                client, search.appointment_type_name
+            )
             return await client.list_available_times(
                 business_id=business_id,
                 practitioner_id=practitioner_id,
                 appointment_type_id=appointment_type_id,
-                from_date=from_date,
-                to_date=to_date,
+                from_date=search.from_date,
+                to_date=search.to_date,
             )
+    except ClinikoEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClinikoEntityConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ClinikoAuthenticationError as exc:
         raise HTTPException(
             status_code=502,

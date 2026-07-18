@@ -242,9 +242,9 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
 
    | Name | Value type | Requirement | Source |
    | --- | --- | --- | --- |
-   | `business_id` | String | Required | LLM-provided from trusted configured context or an earlier appointment result |
-   | `practitioner_id` | String | Required | LLM-provided from trusted configured context or an earlier appointment result |
-   | `appointment_type_id` | String | Required | LLM-provided from trusted configured context or an earlier appointment result |
+   | `business_name` | String | Required | LLM-provided from trusted configured context or the caller's clinic choice |
+   | `practitioner_name` | String | Required | LLM-provided from trusted configured context or the caller's practitioner choice |
+   | `appointment_type_name` | String | Required | LLM-provided from trusted configured context or the caller's service choice |
    | `from_date` | String in `YYYY-MM-DD` format | Required | LLM-provided from the caller's date preference |
    | `to_date` | String in `YYYY-MM-DD` format | Required | LLM-provided from the caller's date preference |
 
@@ -272,10 +272,10 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
 
 13. **Test request**
 
-    Use real Cliniko test IDs and future dates no more than seven days apart:
+    Use names exactly as displayed in Cliniko and future dates no more than seven days apart:
 
     ```text
-    GET https://<RENDER_SERVICE_URL>/availability?business_id=1001&practitioner_id=2001&appointment_type_id=3001&from_date=2026-07-20&to_date=2026-07-24
+    GET https://<RENDER_SERVICE_URL>/availability?business_name=Whitefield&practitioner_name=Dr.%20Ananya&appointment_type_name=Initial%20Dermatology&from_date=2026-07-20&to_date=2026-07-24
     ```
 
     There is no request body.
@@ -297,14 +297,15 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
 
 15. **Dependencies on earlier tool results**
 
-    For booking, the three IDs must come from trusted clinic configuration. For rescheduling, reuse `business_id`, `practitioner_id`, and `appointment_type_id` from the appointment selected from `list_patient_appointments`. Dates come from the caller's stated preference.
+    The three names come from trusted clinic configuration or the caller's stated preferences. For booking, pass the IDs from the caller-selected availability response to `book_appointment`; for rescheduling, the existing appointment identifies the clinic, practitioner, and appointment type whose display names should be used. Dates come from the caller's preference.
 
 16. **Common configuration mistakes**
 
     - Putting the five values in a JSON body instead of query parameters.
     - Sending natural-language dates instead of `YYYY-MM-DD`.
     - Searching a range longer than seven days.
-    - Inventing or reading out Cliniko IDs.
+    - Supplying Cliniko IDs instead of display names.
+    - Using a nickname or shortened label that does not match Cliniko's configured name.
     - Treating a timezone-aware `start_time` response as a date-only value.
     - Assuming an empty array is an error.
 
