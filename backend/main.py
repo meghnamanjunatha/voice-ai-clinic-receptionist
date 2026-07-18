@@ -4,11 +4,13 @@ from fastapi import FastAPI, HTTPException, Path, Query
 
 from .cliniko import (
     ClinikoAPIError,
+    ClinikoAppointmentAlreadyCancelledError,
     ClinikoAppointmentNotFoundError,
     ClinikoAuthenticationError,
     ClinikoClient,
     ClinikoInvalidAppointmentDateTimeError,
     ClinikoInvalidAppointmentIDsError,
+    ClinikoInvalidCancellationReasonError,
     ClinikoPatientConflictError,
     ClinikoRateLimitError,
     ClinikoSlotUnavailableError,
@@ -16,6 +18,8 @@ from .cliniko import (
 )
 from .config import get_settings
 from .schemas import (
+    AppointmentCancellation,
+    AppointmentCancellationResponse,
     AppointmentCreate,
     AppointmentReschedule,
     AppointmentRescheduleResponse,
@@ -222,4 +226,53 @@ async def reschedule_appointment(
         raise HTTPException(
             status_code=502,
             detail="Unable to reschedule appointment in Cliniko",
+        ) from exc
+
+
+@app.post(
+    "/appointments/{appointment_id}/cancel",
+    response_model=AppointmentCancellationResponse,
+)
+async def cancel_appointment(
+    cancellation: AppointmentCancellation,
+    appointment_id: str = Path(pattern=r"^[1-9]\d*$"),
+):
+    try:
+        async with ClinikoClient(get_settings()) as client:
+            return await client.cancel_individual_appointment(
+                appointment_id=appointment_id,
+                cancellation_reason=cancellation.cancellation_reason.value,
+                note=cancellation.note,
+            )
+    except ClinikoAppointmentNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Cliniko appointment not found",
+        ) from exc
+    except ClinikoAppointmentAlreadyCancelledError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Cliniko appointment is already cancelled",
+        ) from exc
+    except ClinikoInvalidCancellationReasonError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Cliniko rejected the cancellation reason",
+        ) from exc
+    except ClinikoAuthenticationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Cliniko authentication failed",
+        ) from exc
+    except ClinikoRateLimitError as exc:
+        headers = {"X-RateLimit-Reset": exc.reset_at} if exc.reset_at else None
+        raise HTTPException(
+            status_code=429,
+            detail="Cliniko rate limit exceeded",
+            headers=headers,
+        ) from exc
+    except ClinikoAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to cancel appointment in Cliniko",
         ) from exc

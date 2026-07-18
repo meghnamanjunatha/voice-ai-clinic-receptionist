@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import IntEnum
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -63,6 +64,34 @@ class AppointmentRescheduleResponse(BaseModel):
     appointment_id: str
     starts_at: datetime
     status: str
+
+
+class CancellationReason(IntEnum):
+    FEELING_BETTER = 10
+    CONDITION_WORSE = 20
+    SICK = 30
+    AWAY = 40
+    OTHER = 50
+    WORK = 60
+
+
+class AppointmentCancellation(BaseModel):
+    cancellation_reason: CancellationReason
+    note: str | None = Field(default=None, max_length=5000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class AppointmentCancellationResponse(BaseModel):
+    appointment_id: str
+    status: str
+    cancellation_reason: CancellationReason
 
 
 class AvailabilityRequest(BaseModel):

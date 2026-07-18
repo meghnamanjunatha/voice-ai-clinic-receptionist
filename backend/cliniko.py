@@ -50,6 +50,14 @@ class ClinikoInvalidAppointmentDateTimeError(ClinikoAPIError):
     """Raised when Cliniko rejects an appointment date-time."""
 
 
+class ClinikoAppointmentAlreadyCancelledError(ClinikoAPIError):
+    """Raised when an individual appointment is already cancelled."""
+
+
+class ClinikoInvalidCancellationReasonError(ClinikoAPIError):
+    """Raised when Cliniko rejects a cancellation reason."""
+
+
 class ClinikoClient:
     def __init__(
         self,
@@ -702,4 +710,83 @@ class ClinikoClient:
             "appointment_id": appointment_id,
             "starts_at": parsed_starts_at.isoformat(),
             "status": "rescheduled",
+        }
+
+    async def cancel_individual_appointment(
+        self,
+        appointment_id: str,
+        cancellation_reason: int,
+        note: str | None = None,
+    ) -> dict[str, str | int]:
+        appointment_path = f"/individual_appointments/{appointment_id}"
+
+        try:
+            existing_response = await self._client.get(
+                appointment_path,
+                params={"q[]": "cancelled_at:*"},
+            )
+        except httpx.RequestError as exc:
+            raise ClinikoAPIError("Unable to retrieve Cliniko appointment") from exc
+
+        self._raise_for_appointment_response(existing_response)
+        try:
+            existing_appointment = existing_response.json()
+        except ValueError as exc:
+            raise ClinikoAPIError(
+                "Cliniko returned an invalid appointment response"
+            ) from exc
+        if not isinstance(existing_appointment, dict):
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+        if str(existing_appointment.get("id")) != appointment_id:
+            raise ClinikoAPIError(
+                "Cliniko returned an unexpected appointment response"
+            )
+        if existing_appointment.get("cancelled_at") is not None:
+            raise ClinikoAppointmentAlreadyCancelledError(
+                "Cliniko appointment is already cancelled"
+            )
+
+        try:
+            response = await self._client.patch(
+                f"{appointment_path}/cancel",
+                json={
+                    "cancellation_reason": cancellation_reason,
+                    "cancellation_note": note,
+                    "apply_to_repeats": False,
+                },
+            )
+        except httpx.RequestError as exc:
+            raise ClinikoAPIError("Unable to cancel Cliniko appointment") from exc
+
+        if response.status_code in {401, 403}:
+            raise ClinikoAuthenticationError("Cliniko authentication failed")
+        if response.status_code == 429:
+            raise ClinikoRateLimitError(response.headers.get("X-RateLimit-Reset"))
+        if response.status_code == 404:
+            raise ClinikoAppointmentNotFoundError("Cliniko appointment not found")
+        if response.status_code in {409, 410}:
+            raise ClinikoAppointmentAlreadyCancelledError(
+                "Cliniko appointment is already cancelled"
+            )
+        if response.status_code == 422:
+            error_text = response.text.lower().replace("_", " ")
+            if "already" in error_text and "cancel" in error_text:
+                raise ClinikoAppointmentAlreadyCancelledError(
+                    "Cliniko appointment is already cancelled"
+                )
+            raise ClinikoInvalidCancellationReasonError(
+                "Cliniko rejected the cancellation reason"
+            )
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ClinikoAPIError("Unable to cancel Cliniko appointment") from exc
+
+        return {
+            "appointment_id": appointment_id,
+            "status": "cancelled",
+            "cancellation_reason": cancellation_reason,
         }

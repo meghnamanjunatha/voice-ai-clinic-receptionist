@@ -8,11 +8,13 @@ from pydantic import SecretStr
 
 from backend.cliniko import (
     ClinikoAPIError,
+    ClinikoAppointmentAlreadyCancelledError,
     ClinikoAppointmentNotFoundError,
     ClinikoAuthenticationError,
     ClinikoClient,
     ClinikoInvalidAppointmentDateTimeError,
     ClinikoInvalidAppointmentIDsError,
+    ClinikoInvalidCancellationReasonError,
     ClinikoPatientConflictError,
     ClinikoRateLimitError,
     ClinikoSlotUnavailableError,
@@ -729,3 +731,152 @@ class ClinikoClientTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(patch_count, 1)
+
+    async def test_cancel_individual_appointment_succeeds_without_delete(self) -> None:
+        cancel_count = 0
+        methods = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cancel_count
+            methods.append(request.method)
+            if request.method == "GET":
+                self.assertEqual(request.url.params["q[]"], "cancelled_at:*")
+                return httpx.Response(
+                    200,
+                    json={"id": "40", "cancelled_at": None},
+                )
+
+            cancel_count += 1
+            self.assertEqual(request.method, "PATCH")
+            self.assertEqual(
+                request.url.path,
+                "/v1/individual_appointments/40/cancel",
+            )
+            self.assertEqual(
+                json.loads(request.content),
+                {
+                    "cancellation_reason": 50,
+                    "cancellation_note": "Patient requested cancellation",
+                    "apply_to_repeats": False,
+                },
+            )
+            return httpx.Response(204)
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            appointment = await client.cancel_individual_appointment(
+                appointment_id="40",
+                cancellation_reason=50,
+                note="Patient requested cancellation",
+            )
+
+        self.assertEqual(cancel_count, 1)
+        self.assertNotIn("DELETE", methods)
+        self.assertEqual(
+            appointment,
+            {
+                "appointment_id": "40",
+                "status": "cancelled",
+                "cancellation_reason": 50,
+            },
+        )
+
+    async def test_cancel_individual_appointment_handles_not_found(self) -> None:
+        cancel_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cancel_count
+            if request.url.path.endswith("/cancel"):
+                cancel_count += 1
+            return httpx.Response(404, json={"error": "Not found"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAppointmentNotFoundError):
+                await client.cancel_individual_appointment("999", 50)
+
+        self.assertEqual(cancel_count, 0)
+
+    async def test_cancel_individual_appointment_handles_already_cancelled(
+        self,
+    ) -> None:
+        cancel_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cancel_count
+            if request.url.path.endswith("/cancel"):
+                cancel_count += 1
+            return httpx.Response(
+                200,
+                json={
+                    "id": "40",
+                    "cancelled_at": "2026-07-18T10:00:00Z",
+                },
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAppointmentAlreadyCancelledError):
+                await client.cancel_individual_appointment("40", 50)
+
+        self.assertEqual(cancel_count, 0)
+
+    async def test_cancel_individual_appointment_handles_invalid_reason(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"id": "40", "cancelled_at": None},
+                )
+            return httpx.Response(
+                422,
+                json={"errors": {"cancellation_reason": ["is invalid"]}},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoInvalidCancellationReasonError):
+                await client.cancel_individual_appointment("40", 999)
+
+    async def test_cancel_individual_appointment_handles_rate_limit(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                headers={"X-RateLimit-Reset": "1784534400"},
+                json={"error": "Rate limited"},
+            )
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoRateLimitError) as context:
+                await client.cancel_individual_appointment("40", 50)
+
+        self.assertEqual(context.exception.reset_at, "1784534400")
+
+    async def test_cancel_individual_appointment_handles_upstream_failure(
+        self,
+    ) -> None:
+        cancel_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cancel_count
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"id": "40", "cancelled_at": None},
+                )
+            cancel_count += 1
+            return httpx.Response(500, json={"error": "Server error"})
+
+        async with ClinikoClient(
+            make_settings(), transport=httpx.MockTransport(handler)
+        ) as client:
+            with self.assertRaises(ClinikoAPIError):
+                await client.cancel_individual_appointment("40", 50)
+
+        self.assertEqual(cancel_count, 1)
