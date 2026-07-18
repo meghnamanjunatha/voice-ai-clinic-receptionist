@@ -83,26 +83,63 @@ class RetellAdapterTests(unittest.TestCase):
         )
 
     def test_missing_signature_returns_401(self) -> None:
-        with patch("backend.retell.verify") as verify:
-            response = self.client.post(
-                "/retell/appointments/cancel",
-                json={"appointment_id": "40", "cancellation_reason": 50},
-            )
+        with self.assertLogs("backend.retell", level="WARNING") as logs:
+            with patch("backend.retell.verify") as verify:
+                response = self.client.post(
+                    "/retell/appointments/cancel",
+                    json={"appointment_id": "40", "cancellation_reason": 50},
+                )
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"detail": "Unauthorized"})
         verify.assert_not_called()
+        log_output = "\n".join(logs.output)
+        self.assertIn("retell_api_key_loaded=True", log_output)
+        self.assertIn("signature_header_exists=False", log_output)
+        self.assertIn("failed_check=missing_signature_header", log_output)
+        self.assertNotIn("test-retell-key", log_output)
 
     def test_invalid_signature_returns_401(self) -> None:
-        with patch("backend.retell.verify", return_value=False):
-            response = self.client.post(
-                "/retell/appointments/cancel",
-                headers={"X-Retell-Signature": "invalid-signature"},
-                json={"appointment_id": "40", "cancellation_reason": 50},
-            )
+        with self.assertLogs("backend.retell", level="WARNING") as logs:
+            with patch("backend.retell.verify", return_value=False):
+                response = self.client.post(
+                    "/retell/appointments/cancel",
+                    headers={"X-Retell-Signature": "invalid-signature"},
+                    json={"appointment_id": "40", "cancellation_reason": 50},
+                )
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"detail": "Unauthorized"})
+        log_output = "\n".join(logs.output)
+        self.assertIn("signature_header_exists=True", log_output)
+        self.assertIn(
+            "failed_check=signature_validation_returned_false",
+            log_output,
+        )
+        self.assertNotIn("invalid-signature", log_output)
+
+    def test_signature_verifier_exception_is_logged_without_secrets(self) -> None:
+        with self.assertLogs("backend.retell", level="WARNING") as logs:
+            with patch(
+                "backend.retell.verify",
+                side_effect=ValueError("signature timestamp is malformed"),
+            ):
+                response = self.client.post(
+                    "/retell/appointments/cancel",
+                    headers={"X-Retell-Signature": "secret-signature"},
+                    json={"appointment_id": "40", "cancellation_reason": 50},
+                )
+
+        self.assertEqual(response.status_code, 401)
+        log_output = "\n".join(logs.output)
+        self.assertIn("failed_check=signature_verifier_exception", log_output)
+        self.assertIn("exception_type=ValueError", log_output)
+        self.assertIn(
+            "exception_message=signature timestamp is malformed",
+            log_output,
+        )
+        self.assertNotIn("test-retell-key", log_output)
+        self.assertNotIn("secret-signature", log_output)
 
     def test_successful_reschedule_reuses_existing_logic(self) -> None:
         fake_client = FakeClinikoClient()
