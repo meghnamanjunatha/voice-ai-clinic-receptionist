@@ -95,8 +95,8 @@
         },
         "practitioner_name": {
           "required": true,
-          "description": "Practitioner display name as shown in Cliniko.",
-          "example": "Dr. Ananya"
+          "description": "Human-readable practitioner or specialty stated by the caller.",
+          "example": "Dermatologist"
         },
         "appointment_type_name": {
           "required": true,
@@ -116,10 +116,10 @@
       },
       "request_example": {
         "business_name": "Whitefield",
-        "practitioner_name": "Dr. Ananya",
+        "practitioner_name": "Dermatologist",
         "appointment_type_name": "Initial Dermatology",
         "from_date": "2026-07-20",
-        "to_date": "2026-07-24"
+        "to_date": "2026-07-20"
       },
       "response_example": [
         {

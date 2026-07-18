@@ -243,7 +243,7 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
    | Name | Value type | Requirement | Source |
    | --- | --- | --- | --- |
    | `business_name` | String | Required | LLM-provided from trusted configured context or the caller's clinic choice |
-   | `practitioner_name` | String | Required | LLM-provided from trusted configured context or the caller's practitioner choice |
+   | `practitioner_name` | String | Required | LLM-provided from the caller's practitioner or specialty choice |
    | `appointment_type_name` | String | Required | LLM-provided from trusted configured context or the caller's service choice |
    | `from_date` | String in `YYYY-MM-DD` format | Required | LLM-provided from the caller's date preference |
    | `to_date` | String in `YYYY-MM-DD` format | Required | LLM-provided from the caller's date preference |
@@ -272,10 +272,10 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
 
 13. **Test request**
 
-    Use names exactly as displayed in Cliniko and future dates no more than seven days apart:
+    Use human-readable names from the caller and future dates no more than seven days apart. For a single-day search, use the same date for `from_date` and `to_date`:
 
     ```text
-    GET https://<RENDER_SERVICE_URL>/availability?business_name=Whitefield&practitioner_name=Dr.%20Ananya&appointment_type_name=Initial%20Dermatology&from_date=2026-07-20&to_date=2026-07-24
+    GET https://<RENDER_SERVICE_URL>/availability?business_name=Whitefield&practitioner_name=Dermatologist&appointment_type_name=Initial%20Dermatology&from_date=2026-07-20&to_date=2026-07-20
     ```
 
     There is no request body.
@@ -305,7 +305,6 @@ Use a 15-second timeout for every function. The backend's default Cliniko timeou
     - Sending natural-language dates instead of `YYYY-MM-DD`.
     - Searching a range longer than seven days.
     - Supplying Cliniko IDs instead of display names.
-    - Using a nickname or shortened label that does not match Cliniko's configured name.
     - Treating a timezone-aware `start_time` response as a date-only value.
     - Assuming an empty array is an error.
 
