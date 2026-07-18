@@ -83,6 +83,10 @@ class AppointmentRescheduleResponse(BaseModel):
     status: str
 
 
+class RetellAppointmentReschedule(AppointmentReschedule):
+    appointment_id: str = Field(pattern=r"^[1-9]\d*$")
+
+
 class CancellationReason(IntEnum):
     FEELING_BETTER = 10
     CONDITION_WORSE = 20
@@ -109,6 +113,10 @@ class AppointmentCancellationResponse(BaseModel):
     appointment_id: str
     status: str
     cancellation_reason: CancellationReason
+
+
+class RetellAppointmentCancellation(AppointmentCancellation):
+    appointment_id: str = Field(pattern=r"^[1-9]\d*$")
 
 
 class AvailabilityRequest(BaseModel):

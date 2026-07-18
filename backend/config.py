@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     cliniko_api_base_url: str
     cliniko_user_agent: str
     cliniko_timeout_seconds: float = 10.0
+    retell_api_key: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -6,8 +6,9 @@
     "Replace {{backend_base_url}} with the public HTTPS URL of the FastAPI service.",
     "For POST and PATCH tools, enable Retell's Payload: args only option so FastAPI receives the flat JSON body it expects.",
     "Do not put the Cliniko API key in Retell. The FastAPI service owns Cliniko authentication.",
-    "Before a live launch, verify X-Retell-Signature in FastAPI and decide how to prevent duplicate writes because Retell may retry failed custom-function calls.",
-    "Retell URL placeholders use dynamic-variable notation. patient_id and appointment_id are trusted IDs returned by earlier tools and must never be requested from the caller."
+    "FastAPI verifies X-Retell-Signature on /retell/* adapter routes. Retell supplies this header automatically; do not configure the Retell or Cliniko API key as a custom-function header.",
+    "Before a production launch, protect write operations with idempotency keys or persisted operation records because Retell may retry failed custom-function calls.",
+    "Patient and appointment IDs are trusted IDs returned by earlier tools and must never be requested from the caller."
   ],
   "tools": [
     {
@@ -170,22 +171,20 @@
       "name": "reschedule_appointment",
       "description": "Move the Cliniko appointment selected from list_patient_appointments after the caller explicitly confirms it and the new timezone-aware start time. Call once only; do not automatically retry.",
       "method": "PATCH",
-      "url": "{{backend_base_url}}/appointments/{{appointment_id}}",
-      "path_dynamic_variables": {
-        "appointment_id": "Trusted internal Cliniko appointment ID obtained before this tool call."
-      },
+      "url": "{{backend_base_url}}/retell/appointments/reschedule",
       "payload_args_only": true,
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "appointment_id": {"type": "string", "pattern": "^[1-9]\\d*$", "description": "Trusted internal Cliniko appointment ID selected from list_patient_appointments. Never ask the caller for it."},
           "starts_at": {"type": "string", "format": "date-time", "description": "The newly confirmed start time as timezone-aware ISO 8601."}
         },
-        "required": ["starts_at"]
+        "required": ["appointment_id", "starts_at"]
       },
       "request_example": {
-        "path": {"appointment_id": "987654321"},
-        "body": {"starts_at": "2026-07-23T14:00:00+10:00"}
+        "appointment_id": "987654321",
+        "starts_at": "2026-07-23T14:00:00+10:00"
       },
       "response_example": {
         "appointment_id": "987654321",
@@ -198,15 +197,13 @@
       "name": "cancel_appointment",
       "description": "Cancel the Cliniko appointment selected from list_patient_appointments without deleting it, after the caller explicitly confirms the appointment and cancellation. Call once only; do not automatically retry.",
       "method": "POST",
-      "url": "{{backend_base_url}}/appointments/{{appointment_id}}/cancel",
-      "path_dynamic_variables": {
-        "appointment_id": "Trusted internal Cliniko appointment ID obtained before this tool call."
-      },
+      "url": "{{backend_base_url}}/retell/appointments/cancel",
       "payload_args_only": true,
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "appointment_id": {"type": "string", "pattern": "^[1-9]\\d*$", "description": "Trusted internal Cliniko appointment ID selected from list_patient_appointments. Never ask the caller for it."},
           "cancellation_reason": {
             "type": "integer",
             "enum": [10, 20, 30, 40, 50, 60],
@@ -218,11 +215,12 @@
             "description": "Optional brief note only when the caller provides useful additional context. Do not invent one."
           }
         },
-        "required": ["cancellation_reason"]
+        "required": ["appointment_id", "cancellation_reason"]
       },
       "request_example": {
-        "path": {"appointment_id": "987654321"},
-        "body": {"cancellation_reason": 60, "note": "Work meeting moved to the same time."}
+        "appointment_id": "987654321",
+        "cancellation_reason": 60,
+        "note": "Work meeting moved to the same time."
       },
       "response_example": {
         "appointment_id": "987654321",

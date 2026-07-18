@@ -18,6 +18,7 @@ from .cliniko import (
     InvalidPhoneNumberError,
 )
 from .config import get_settings
+from .retell import router as retell_router
 from .schemas import (
     AppointmentCancellation,
     AppointmentCancellationResponse,
@@ -29,6 +30,8 @@ from .schemas import (
     PatientCreate,
     PatientAppointmentResponse,
     PatientResponse,
+    RetellAppointmentCancellation,
+    RetellAppointmentReschedule,
 )
 
 app = FastAPI()
@@ -310,3 +313,35 @@ async def cancel_appointment(
             status_code=502,
             detail="Unable to cancel appointment in Cliniko",
         ) from exc
+
+
+@retell_router.patch(
+    "/appointments/reschedule",
+    response_model=AppointmentRescheduleResponse,
+)
+async def retell_reschedule_appointment(
+    request: RetellAppointmentReschedule,
+):
+    return await reschedule_appointment(
+        appointment=AppointmentReschedule(starts_at=request.starts_at),
+        appointment_id=request.appointment_id,
+    )
+
+
+@retell_router.post(
+    "/appointments/cancel",
+    response_model=AppointmentCancellationResponse,
+)
+async def retell_cancel_appointment(
+    request: RetellAppointmentCancellation,
+):
+    return await cancel_appointment(
+        cancellation=AppointmentCancellation(
+            cancellation_reason=request.cancellation_reason,
+            note=request.note,
+        ),
+        appointment_id=request.appointment_id,
+    )
+
+
+app.include_router(retell_router)
