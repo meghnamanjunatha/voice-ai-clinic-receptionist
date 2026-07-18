@@ -1,0 +1,202 @@
+{
+  "document_type": "retell_custom_function_configuration_blueprint",
+  "version": 1,
+  "status": "not_deployed",
+  "configuration_notes": [
+    "Replace {{backend_base_url}} with the public HTTPS URL of the FastAPI service.",
+    "For POST and PATCH tools, enable Retell's Payload: args only option so FastAPI receives the flat JSON body it expects.",
+    "Do not put the Cliniko API key in Retell. The FastAPI service owns Cliniko authentication.",
+    "Before a live launch, verify X-Retell-Signature in FastAPI and decide how to prevent duplicate writes because Retell may retry failed custom-function calls.",
+    "The current backend has no endpoint that finds a caller's upcoming appointment. Reschedule and cancellation therefore require a trusted appointment_id supplied by prior application context; never ask a patient to know this internal ID and never guess it.",
+    "Retell URL placeholders use dynamic-variable notation. appointment_id must already be present as a trusted dynamic variable for the two path-based tools."
+  ],
+  "tools": [
+    {
+      "type": "custom",
+      "name": "find_or_create_patient",
+      "description": "Find a Cliniko patient by normalized phone number, or create the patient when no match exists. This can write data, so confirm the caller's full name and phone number before calling. If multiple patients share the phone number, stop and escalate instead of guessing.",
+      "method": "POST",
+      "url": "{{backend_base_url}}/patients",
+      "payload_args_only": true,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "full_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 511,
+            "description": "The caller's confirmed full name."
+          },
+          "phone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+            "description": "The caller's confirmed phone number, including country code when known."
+          }
+        },
+        "required": ["full_name", "phone"]
+      },
+      "request_example": {
+        "full_name": "Asha Rao",
+        "phone": "+61 412 345 678"
+      },
+      "response_example": {
+        "id": "123456789",
+        "full_name": "Asha Rao",
+        "phone": "+61412345678",
+        "is_new_patient": false
+      }
+    },
+    {
+      "type": "custom",
+      "name": "search_availability",
+      "description": "Search Cliniko for available appointment start times. Searches are read-only, dates use YYYY-MM-DD, and the inclusive search window must not exceed seven days.",
+      "method": "GET",
+      "url": "{{backend_base_url}}/availability",
+      "query_parameters": {
+        "business_id": {
+          "required": true,
+          "description": "Confirmed Cliniko business ID as a string.",
+          "example": "1001"
+        },
+        "practitioner_id": {
+          "required": true,
+          "description": "Confirmed Cliniko practitioner ID as a string.",
+          "example": "2001"
+        },
+        "appointment_type_id": {
+          "required": true,
+          "description": "Confirmed Cliniko appointment type ID as a string.",
+          "example": "3001"
+        },
+        "from_date": {
+          "required": true,
+          "description": "First local calendar date to search in YYYY-MM-DD format.",
+          "example": "2026-07-20"
+        },
+        "to_date": {
+          "required": true,
+          "description": "Last local calendar date to search in YYYY-MM-DD format, no more than seven days after from_date.",
+          "example": "2026-07-24"
+        }
+      },
+      "request_example": {
+        "business_id": "1001",
+        "practitioner_id": "2001",
+        "appointment_type_id": "3001",
+        "from_date": "2026-07-20",
+        "to_date": "2026-07-24"
+      },
+      "response_example": [
+        {
+          "start_time": "2026-07-21T09:30:00+10:00",
+          "business_id": "1001",
+          "practitioner_id": "2001",
+          "appointment_type_id": "3001"
+        }
+      ]
+    },
+    {
+      "type": "custom",
+      "name": "book_appointment",
+      "description": "Create one Cliniko appointment after the caller explicitly confirms the patient, clinic, practitioner, appointment type, and timezone-aware start time. Call once only; do not automatically retry a failed creation.",
+      "method": "POST",
+      "url": "{{backend_base_url}}/appointments",
+      "payload_args_only": true,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "patient_id": {"type": "string", "pattern": "^[1-9]\\d*$", "description": "Cliniko patient ID returned by find_or_create_patient."},
+          "business_id": {"type": "string", "pattern": "^[1-9]\\d*$", "description": "Confirmed Cliniko business ID."},
+          "practitioner_id": {"type": "string", "pattern": "^[1-9]\\d*$", "description": "Confirmed Cliniko practitioner ID."},
+          "appointment_type_id": {"type": "string", "pattern": "^[1-9]\\d*$", "description": "Confirmed Cliniko appointment type ID."},
+          "starts_at": {"type": "string", "format": "date-time", "description": "Confirmed available start time as timezone-aware ISO 8601."}
+        },
+        "required": ["patient_id", "business_id", "practitioner_id", "appointment_type_id", "starts_at"]
+      },
+      "request_example": {
+        "patient_id": "123456789",
+        "business_id": "1001",
+        "practitioner_id": "2001",
+        "appointment_type_id": "3001",
+        "starts_at": "2026-07-21T09:30:00+10:00"
+      },
+      "response_example": {
+        "appointment_id": "987654321",
+        "patient_id": "123456789",
+        "business_id": "1001",
+        "practitioner_id": "2001",
+        "appointment_type_id": "3001",
+        "starts_at": "2026-07-21T09:30:00+10:00",
+        "status": "booked"
+      }
+    },
+    {
+      "type": "custom",
+      "name": "reschedule_appointment",
+      "description": "Move a known Cliniko appointment after the caller explicitly confirms the appointment and new timezone-aware start time. Requires a trusted appointment_id in Retell context. Call once only; do not automatically retry.",
+      "method": "PATCH",
+      "url": "{{backend_base_url}}/appointments/{{appointment_id}}",
+      "path_dynamic_variables": {
+        "appointment_id": "Trusted internal Cliniko appointment ID obtained before this tool call."
+      },
+      "payload_args_only": true,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "starts_at": {"type": "string", "format": "date-time", "description": "The newly confirmed start time as timezone-aware ISO 8601."}
+        },
+        "required": ["starts_at"]
+      },
+      "request_example": {
+        "path": {"appointment_id": "987654321"},
+        "body": {"starts_at": "2026-07-23T14:00:00+10:00"}
+      },
+      "response_example": {
+        "appointment_id": "987654321",
+        "starts_at": "2026-07-23T14:00:00+10:00",
+        "status": "booked"
+      }
+    },
+    {
+      "type": "custom",
+      "name": "cancel_appointment",
+      "description": "Cancel a known Cliniko appointment without deleting it, after the caller explicitly confirms the appointment and cancellation. Requires a trusted appointment_id in Retell context. Call once only; do not automatically retry.",
+      "method": "POST",
+      "url": "{{backend_base_url}}/appointments/{{appointment_id}}/cancel",
+      "path_dynamic_variables": {
+        "appointment_id": "Trusted internal Cliniko appointment ID obtained before this tool call."
+      },
+      "payload_args_only": true,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cancellation_reason": {
+            "type": "integer",
+            "enum": [10, 20, 30, 40, 50, 60],
+            "description": "Cliniko reason code: 10 feeling better, 20 condition worse, 30 sick, 40 away, 50 other, 60 work."
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 5000,
+            "description": "Optional brief note only when the caller provides useful additional context. Do not invent one."
+          }
+        },
+        "required": ["cancellation_reason"]
+      },
+      "request_example": {
+        "path": {"appointment_id": "987654321"},
+        "body": {"cancellation_reason": 60, "note": "Work meeting moved to the same time."}
+      },
+      "response_example": {
+        "appointment_id": "987654321",
+        "status": "cancelled",
+        "cancellation_reason": 60
+      }
+    }
+  ]
+}
